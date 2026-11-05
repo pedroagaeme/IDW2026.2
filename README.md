@@ -11,26 +11,35 @@ docker compose up -d
 ```
 
 - PostgreSQL: `localhost:5433` (banco `idw`, usuário `idw`, senha `idw_local`)
-- Metabase: http://localhost:3000 (a primeira inicialização leva alguns minutos)
+- Metabase: http://localhost:3000
 
-Para recriar o banco do zero (os scripts só rodam com o volume vazio):
+A primeira inicialização leva alguns minutos. O serviço `metabase-setup` espera o Metabase subir e configura tudo
+sozinho: cria o admin de demonstração, conecta o banco `idw` e importa as 10 perguntas e o dashboard.
+Acompanhe com `docker compose logs -f metabase-setup`; ao final ele mostra o link do dashboard.
+
+**Login do Metabase (somente demonstração, dados fictícios):**
+
+| Campo | Valor |
+|---|---|
+| E-mail | `admin@example.com` |
+| Senha | `Idw@Demo2026` |
+
+Depois de entrar, abra **Our analytics → IDW – Rendimento Acadêmico**. Para trocar o login de demonstração,
+altere `MB_ADMIN_EMAIL` e `MB_ADMIN_SENHA` no serviço `metabase-setup` antes da primeira subida.
+
+Para recriar tudo do zero (os scripts só rodam com os volumes vazios):
 
 ```bash
 docker compose down -v
 docker compose up -d
 ```
 
-## Conectar o banco no Metabase
+Se a porta 3000 ou 5433 já estiver em uso, pare o outro serviço ou altere as portas no `docker-compose.yml`.
 
-Na configuração inicial, ou em *Admin → Databases → Add database*, escolha **PostgreSQL**:
+## Salvar os gráficos para enviar
 
-| Campo | Valor |
-|---|---|
-| Host | `idw-postgres` |
-| Porta | `5432` |
-| Banco | `idw` |
-| Usuário | `idw` |
-| Senha | `idw_local` |
+- **Um gráfico:** abra a pergunta e use o ícone de download (canto inferior direito) para salvar em PNG.
+- **Dashboard inteiro:** no menu **⋯** do dashboard, exporte em PDF.
 
 ## Conteúdo
 
@@ -38,7 +47,8 @@ Na configuração inicial, ou em *Admin → Databases → Add database*, escolha
 - `db/02_seed_pdf.sql`: registros de exemplo do PDF.
 - `db/03_seed_extra_pt.sql`: povoamento adicional, determinístico e em português (7 cursos, 11 professores,
   8 disciplinas, 6 semestres, 201 alunos, ~2.900 registros de rendimento).
-- `consultas/consultas.sql`: consultas do PDF, prontas para colar como perguntas SQL no Metabase.
+- `metabase/configurar.py`: configuração automática do Metabase (admin, banco, perguntas e dashboard).
+- `consultas/consultas.sql`: as mesmas consultas em SQL puro, para usar fora do Metabase.
 
 ## Observações sobre o esquema
 

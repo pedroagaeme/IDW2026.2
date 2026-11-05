@@ -27,6 +27,18 @@ services:
     volumes:
       - idw_metabase:/metabase-data
 
+  # Roda uma vez: cria o admin de demonstração, conecta o banco e importa as perguntas e o dashboard
+  metabase-setup:
+    image: python:3.12-alpine
+    container_name: idw-metabase-setup
+    depends_on:
+      - metabase
+      - postgres
+    volumes:
+      - ./metabase:/app:ro
+    command: ["python", "/app/configurar.py"]
+    restart: "no"
+
 volumes:
   idw_pgdata:
   idw_metabase:
