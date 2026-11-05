@@ -1,0 +1,32 @@
+# Ambiente local: PostgreSQL com os esquemas estrela + Metabase.
+# Os scripts de db/ rodam em ordem alfabética na primeira inicialização (volume vazio).
+services:
+  postgres:
+    image: postgres:16
+    container_name: idw-postgres
+    environment:
+      POSTGRES_USER: idw
+      POSTGRES_PASSWORD: idw_local
+      POSTGRES_DB: idw
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./db:/docker-entrypoint-initdb.d:ro
+      - idw_pgdata:/var/lib/postgresql/data
+
+  metabase:
+    image: metabase/metabase:latest
+    container_name: idw-metabase
+    depends_on:
+      - postgres
+    ports:
+      - "3000:3000"
+    environment:
+      # banco interno do Metabase (usuários, perguntas, dashboards) em arquivo H2 no volume
+      MB_DB_FILE: /metabase-data/metabase.db
+    volumes:
+      - idw_metabase:/metabase-data
+
+volumes:
+  idw_pgdata:
+  idw_metabase:
