@@ -49,12 +49,14 @@ CREATE TABLE Disciplina (
 
 CREATE TABLE TurmaDisciplina (
     id_turmaDisciplina INT PRIMARY KEY,
-    id_disciplina      INT,
     id_professor1      INT,
+    id_professor2      INT,
+    id_professor3      INT,
     periodo            VARCHAR(20),
     horario            VARCHAR(50),
-    FOREIGN KEY (id_disciplina)  REFERENCES Disciplina(id_disciplina),
-    FOREIGN KEY (id_professor1)  REFERENCES Professor(id_professor)
+    FOREIGN KEY (id_professor1)  REFERENCES Professor(id_professor),
+    FOREIGN KEY (id_professor2)  REFERENCES Professor(id_professor),
+    FOREIGN KEY (id_professor3)  REFERENCES Professor(id_professor)
 );
 
 CREATE TABLE TurmaAluno (
@@ -62,8 +64,8 @@ CREATE TABLE TurmaAluno (
     anoIngresso             INT,
     semestreIngresso        INT,
     anoSemestreIngresso     VARCHAR(10),
-    semestreMinimoConclusao INT,
-    semestreMaximoConclusao INT
+    semestreMinimoConclusao VARCHAR(10),
+    semestreMaximoConclusao VARCHAR(10)
 );
 
 CREATE TABLE Aluno (
