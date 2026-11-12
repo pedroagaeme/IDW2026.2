@@ -67,10 +67,11 @@ INSERT INTO Disciplina VALUES
 -- --------------------------------------------------------
 -- Dimensão TurmaDisciplina: 2 turmas (manhã e noite) por disciplina e semestre
 -- id = 10000 + (disciplina - 100) * 100 + semestre * 10 + turma
+-- A disciplina da turma fica nas tabelas fato (TurmaDisciplina não tem id_disciplina).
+-- id_professor2 e id_professor3 (co-docência) ficam vazios por enquanto.
 -- --------------------------------------------------------
-INSERT INTO TurmaDisciplina
+INSERT INTO TurmaDisciplina (id_turmaDisciplina, id_professor1, periodo, horario)
 SELECT 10000 + (d - 100) * 100 + p * 10 + t,
-       d,
        2 + ((d + p + t) % 10),
        dt.anoSemestre,
        CASE t WHEN 1 THEN '24M12' ELSE '35N12' END

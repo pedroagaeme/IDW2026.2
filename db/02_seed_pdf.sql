@@ -7,7 +7,7 @@ INSERT INTO Professor VALUES (1, 'Carlos Silva', '1980-05-12', 'Masculino', 'Boa
 
 INSERT INTO Disciplina VALUES (101, 60, 4, 'Obrigatória');
 
-INSERT INTO TurmaDisciplina VALUES (501, 101, 1, '2023.1', '24M12');
+INSERT INTO TurmaDisciplina (id_turmaDisciplina, id_professor1, periodo, horario) VALUES (501, 1, '2023.1', '24M12');
 
 INSERT INTO TurmaAluno VALUES (20231, 2023, 1, '2023.1', 8, 14);
 
