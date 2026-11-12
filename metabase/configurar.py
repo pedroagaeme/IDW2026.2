@@ -30,11 +30,19 @@ AZUL, VERDE, ROXO, VERMELHO, AMARELO, LARANJA, CINZA = (
 FAIXAS_NOTA = ["#ED6E6E", "#F2A86F", "#F9D45C", "#A7D07C", "#84BB4C"]  # do vermelho (0 a 2,9) ao verde (9 a 10)
 
 # Expressões reutilizadas
-PCT_FALTAS = "100.0 * f.qtdfaltas / (d.cargahoraria / 2.0)"  # faltas ÷ aulas previstas (carga horária ÷ 2)
+# Faltas contadas em horas-aula: % de faltas = faltas ÷ carga horária da disciplina (nunca passa de 100%,
+# e é coerente com a reprovação por falta dos dados de exemplo).
+PCT_FALTAS = "100.0 * f.qtdfaltas / d.cargahoraria"
 DISCIPLINAS = [f"Disc. {i}" for i in range(102, 110)]
 DEPARTAMENTOS = ["Administração", "Computação", "Engenharia Civil", "Física", "Letras", "Medicina",
                  "Sistemas de Informação"]
 SEMESTRES = ["2023.1", "2023.2", "2024.1", "2024.2", "2025.1", "2025.2"]
+
+
+# Valem para todos os gráficos: sem o grupo automático "Other" (que soma as últimas categorias e gera
+# valores que não existem) e com todos os rótulos de valor visíveis.
+CONFIG_PADRAO = {"graph.max_categories_enabled": False, "graph.max_categories": 100,
+                 "graph.label_value_frequency": "all"}
 
 
 def sufixo(*colunas, texto="%"):
@@ -155,8 +163,8 @@ where not f.periodotrancado
         nome="1.4 Percentual de faltas por bairro (%)",
         tipo="row",
         config={"graph.dimensions": ["bairro"], "graph.metrics": ["pct_faltas"], "graph.show_values": True,
-                "graph.y_axis.title_text": "% das aulas previstas", "column_settings": sufixo("pct_faltas")},
-        sql=f"""-- Faltas ÷ aulas previstas (carga horária ÷ 2), sem períodos trancados.
+                "graph.y_axis.title_text": "% da carga horária", "column_settings": sufixo("pct_faltas")},
+        sql=f"""-- Faltas ÷ carga horária da disciplina, sem períodos trancados.
 -- A barra "MÉDIA GERAL" é a referência: bairros acima dela faltam mais que a média.
 with base as (
     select a.bairroresidencia, a.id_aluno, {PCT_FALTAS} as pct
@@ -321,14 +329,14 @@ order by 1, 2""",
         altura=8,
     ),
     dict(
-        nome="2.3b Faltas ao longo dos semestres (% das aulas)",
+        nome="2.3b Faltas ao longo dos semestres (% da carga horária)",
         tipo="line",
         config={"graph.dimensions": ["semestre", "grupo"], "graph.metrics": ["pct_faltas"],
-                "graph.y_axis.title_text": "% das aulas previstas", "column_settings": sufixo("pct_faltas")},
-        sql="""-- Média de faltas ponderada pelos matriculados, convertida em % das aulas previstas (carga horária ÷ 2).
+                "graph.y_axis.title_text": "% da carga horária", "column_settings": sufixo("pct_faltas")},
+        sql="""-- Média de faltas ponderada pelos matriculados, convertida em % da carga horária da disciplina.
 select dt.anosemestre as semestre,
        case when lower({{separar_por}}) = 'modalidade' then c.modalidadeensino else c.turno end as grupo,
-       round(sum(f.mediafaltas * f.qtdmatriculados / (d.cargahoraria / 2.0) * 100) / sum(f.qtdmatriculados), 1)
+       round(sum(f.mediafaltas * f.qtdmatriculados / d.cargahoraria * 100) / sum(f.qtdmatriculados), 1)
          as pct_faltas
 from fatorendimentodisciplina f
 join data dt on dt.id_data = f.id_data
@@ -546,7 +554,7 @@ def main():
             "name": p["nome"], "collection_id": colecao, "display": p["tipo"],
             "dataset_query": {"type": "native", "database": banco,
                               "native": {"query": p["sql"], "template-tags": variaveis_da_pergunta(p)}},
-            "visualization_settings": p["config"],
+            "visualization_settings": {**CONFIG_PADRAO, **p["config"]},
         }, sessao)
         perguntas_ids.append((p, carta["id"]))
 

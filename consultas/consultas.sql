@@ -56,7 +56,7 @@ order by case turno when 'Matutino' then 1 when 'Vespertino' then 2 when 'Noturn
 -- Escolha a disciplina e, se quiser, a faixa etária nos filtros do dashboard.
 -- O registro do PDF com faixa "20-25" entra em 21-25.
 select f.medianota as nota,
-       round(100 - 100.0 * f.qtdfaltas / (d.cargahoraria / 2.0), 1) as frequencia,
+       round(100 - 100.0 * f.qtdfaltas / d.cargahoraria, 1) as frequencia,
        a.genero
 from fatorendimentoaluno f
 join aluno a on a.id_aluno = f.id_aluno
@@ -68,10 +68,10 @@ where not f.periodotrancado
 ;
 
 -- 1.4 Percentual de faltas por bairro (%)  [linhas horizontais (Row)]
--- Faltas ÷ aulas previstas (carga horária ÷ 2), sem períodos trancados.
+-- Faltas ÷ carga horária da disciplina, sem períodos trancados.
 -- A barra "MÉDIA GERAL" é a referência: bairros acima dela faltam mais que a média.
 with base as (
-    select a.bairroresidencia, a.id_aluno, 100.0 * f.qtdfaltas / (d.cargahoraria / 2.0) as pct
+    select a.bairroresidencia, a.id_aluno, 100.0 * f.qtdfaltas / d.cargahoraria as pct
     from fatorendimentoaluno f
     join aluno a on a.id_aluno = f.id_aluno
     join disciplina d on d.id_disciplina = f.id_disciplina
@@ -184,11 +184,11 @@ join curso c on c.id_curso = f.id_curso
 group by 1, 2
 order by 1, 2;
 
--- 2.3b Faltas ao longo dos semestres (% das aulas)  [linhas]
--- Média de faltas ponderada pelos matriculados, convertida em % das aulas previstas (carga horária ÷ 2).
+-- 2.3b Faltas ao longo dos semestres (% da carga horária)  [linhas]
+-- Média de faltas ponderada pelos matriculados, convertida em % da carga horária da disciplina.
 select dt.anosemestre as semestre,
        case when lower('Turno') = 'modalidade' then c.modalidadeensino else c.turno end as grupo,
-       round(sum(f.mediafaltas * f.qtdmatriculados / (d.cargahoraria / 2.0) * 100) / sum(f.qtdmatriculados), 1)
+       round(sum(f.mediafaltas * f.qtdmatriculados / d.cargahoraria * 100) / sum(f.qtdmatriculados), 1)
          as pct_faltas
 from fatorendimentodisciplina f
 join data dt on dt.id_data = f.id_data
