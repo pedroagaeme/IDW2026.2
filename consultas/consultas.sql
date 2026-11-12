@@ -53,7 +53,7 @@ order by case turno when 'Matutino' then 1 when 'Vespertino' then 2 when 'Noturn
          assistencia;
 
 -- 1.3 Nota × frequência por gênero (um ponto por aluno)  [dispersão]
--- Escolha a disciplina e, se quiser, a faixa etária nos filtros do dashboard.
+-- Escolha a disciplina, o semestre e, se quiser, a faixa etária nos filtros do dashboard.
 -- O registro do PDF com faixa "20-25" entra em 21-25.
 select f.medianota as nota,
        round(100 - 100.0 * f.qtdfaltas / d.cargahoraria, 1) as frequencia,
@@ -61,9 +61,11 @@ select f.medianota as nota,
 from fatorendimentoaluno f
 join aluno a on a.id_aluno = f.id_aluno
 join disciplina d on d.id_disciplina = f.id_disciplina
+join data dt on dt.id_data = f.id_data
 where not f.periodotrancado
   and f.medianota is not null
   and 'Disc. ' || f.id_disciplina = 'Disc. 105'
+  and dt.anosemestre = '2025.2'
   -- filtro opcional: and case when a.faixaetaria = '20-25' then '21-25' else a.faixaetaria end = '<valor>'
 ;
 
@@ -219,6 +221,23 @@ join turmadisciplina t on t.id_turmadisciplina = f.id_turmadisciplina
 where f.id_disciplina <> 101
 group by f.id_disciplina, t.horario
 order by f.id_disciplina, t.horario;
+
+-- 2.5 Co-docência: aprovação e amplitude das notas por nº de professores  [combinado: barras + linha]
+-- Taxa de aprovação por nota (barras) e amplitude média das notas, maior − menor (linha, eixo direito),
+-- por número de professores da turma.
+with turmas as (
+    select f.*, 1 + (t.id_professor2 is not null)::int + (t.id_professor3 is not null)::int as n_prof
+    from fatorendimentodisciplina f
+    join turmadisciplina t on t.id_turmadisciplina = f.id_turmadisciplina
+    where f.id_disciplina <> 101
+)
+select case n_prof when 1 then 'Docente único' else n_prof || ' professores' end
+         || ' (' || count(distinct id_turmadisciplina) || ' turmas)' as grupo,
+       round(100.0 * sum(qtdaprovacoesnota) / sum(qtdmatriculados), 1) as pct_aprovacao,
+       round(avg(maiornota - menornota), 2) as amplitude_media
+from turmas
+group by n_prof
+order by n_prof;
 
 -- 2.6 Matriculados por semestre e modalidade de ensino  [área empilhadas]
 select d.anosemestre as semestre, c.modalidadeensino as modalidade, sum(f.qtdmatriculados) as matriculados

@@ -1,2 +1,33 @@
+# Segredos e configurações locais
 .env*
+!.env.example
 .neon
+docker-compose.override.yml
+
+# Python
+*__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Dados locais (o Postgres e o Metabase guardam tudo em volumes do Docker)
+*.db
+*.mv.db
+*.trace.db
+*.log
+logs/
+*.dump
+*.backup
+
+# Exportações do Metabase (PNG/PDF dos gráficos para enviar)
+exports/
+
+# Editores e sistema operacional
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+~$*

@@ -33,7 +33,7 @@ FAIXAS_NOTA = ["#ED6E6E", "#F2A86F", "#F9D45C", "#A7D07C", "#84BB4C"]  # do verm
 # Faltas contadas em horas-aula: % de faltas = faltas ÷ carga horária da disciplina (nunca passa de 100%,
 # e é coerente com a reprovação por falta dos dados de exemplo).
 PCT_FALTAS = "100.0 * f.qtdfaltas / d.cargahoraria"
-DISCIPLINAS = [f"Disc. {i}" for i in range(102, 110)]
+DISCIPLINAS = [f"Disc. {i}" for i in range(102, 122)]
 DEPARTAMENTOS = ["Administração", "Computação", "Engenharia Civil", "Física", "Letras", "Medicina",
                  "Sistemas de Informação"]
 SEMESTRES = ["2023.1", "2023.2", "2024.1", "2024.2", "2025.1", "2025.2"]
@@ -57,6 +57,7 @@ def cores(**por_serie):
 # Filtros do dashboard: (id, nome, slug, valor padrão, opções)
 FILTROS = [
     ("f_disc13", "Disciplina (1.3)", "disciplina_1_3", "Disc. 105", DISCIPLINAS),
+    ("f_sem13", "Semestre (1.3)", "semestre_1_3", "2025.2", SEMESTRES),
     ("f_faixa13", "Faixa etária (1.3)", "faixa_etaria_1_3", None, ["18-20", "21-25", "26-30", "31+"]),
     ("f_dep151", "Departamento (1.5.1)", "departamento_1_5_1", None, DEPARTAMENTOS),
     ("f_sem151", "Semestre (1.5.1)", "semestre_1_5_1", None, SEMESTRES),
@@ -66,7 +67,9 @@ FILTROS = [
 
 # Cada pergunta: nome, tipo de gráfico, configurações, SQL, variáveis {nome: (rótulo, padrão, filtro do dashboard)},
 # altura no dashboard. Variáveis com padrão são obrigatórias; sem padrão, o trecho [[...]] some quando vazio.
-# A ordem da lista é a do dashboard, em pares lado a lado (a 2.4 vem antes da 2.3 para os pares 2.3a/b e 2.7a/b).
+# Os comentários "--" do início do SQL viram a descrição do gráfico (ícone ⓘ no dashboard).
+# A ordem da lista é a do dashboard, em pares lado a lado dentro de cada aba (a 2.4 fica no fim para
+# manter os pares 2.3a/b e 2.7a/b).
 PERGUNTAS = [
     dict(
         nome="1.1 Evasão por forma de ingresso e cota (%)",
@@ -143,7 +146,7 @@ order by case turno when 'Matutino' then 1 when 'Vespertino' then 2 when 'Noturn
         config={"graph.dimensions": ["nota", "genero"], "graph.metrics": ["frequencia"],
                 "graph.x_axis.title_text": "Nota", "graph.y_axis.title_text": "Frequência (%)",
                 "series_settings": cores(Feminino=ROXO, Masculino=AZUL)},
-        sql=f"""-- Escolha a disciplina e, se quiser, a faixa etária nos filtros do dashboard.
+        sql=f"""-- Escolha a disciplina, o semestre e, se quiser, a faixa etária nos filtros do dashboard.
 -- O registro do PDF com faixa "20-25" entra em 21-25.
 select f.medianota as nota,
        round(100 - {PCT_FALTAS}, 1) as frequencia,
@@ -151,11 +154,14 @@ select f.medianota as nota,
 from fatorendimentoaluno f
 join aluno a on a.id_aluno = f.id_aluno
 join disciplina d on d.id_disciplina = f.id_disciplina
+join data dt on dt.id_data = f.id_data
 where not f.periodotrancado
   and f.medianota is not null
   and 'Disc. ' || f.id_disciplina = {{{{disciplina}}}}
+  and dt.anosemestre = {{{{semestre}}}}
   [[and case when a.faixaetaria = '20-25' then '21-25' else a.faixaetaria end = {{{{faixa_etaria}}}}]]""",
         variaveis={"disciplina": ("Disciplina", "Disc. 105", "f_disc13"),
+                   "semestre": ("Semestre", "2025.2", "f_sem13"),
                    "faixa_etaria": ("Faixa etária", None, "f_faixa13")},
         altura=9,
     ),
@@ -186,7 +192,7 @@ order by pct_faltas desc""",
         nome="1.5.1 Reprovação por disciplina, por nota e por falta (%)",
         tipo="bar",
         config={"graph.dimensions": ["disciplina"], "graph.metrics": ["reprov_nota", "reprov_falta"],
-                "stackable.stack_type": "stacked", "graph.show_values": True,
+                "stackable.stack_type": "stacked", "graph.show_values": False,
                 "graph.show_goal": True, "graph.goal_value": LIMITE_REPROVACAO,
                 "graph.goal_label": f"Limite {LIMITE_REPROVACAO}%",
                 "graph.y_axis.title_text": "% das matrículas", "column_settings": sufixo("reprov_nota", "reprov_falta"),
@@ -292,26 +298,6 @@ order by (sum(f.qtdnotas8_8_9) + sum(f.qtdnotas9_10)) * 1.0
         altura=9,
     ),
     dict(
-        nome="2.4 Disciplinas obrigatórias mais críticas por centro (% de notas de 0 a 2,9)",
-        tipo="row",
-        config={"graph.dimensions": ["disciplina"], "graph.metrics": ["pct_notas_criticas"],
-                "graph.show_values": True, "graph.y_axis.title_text": "% das notas entre 0 e 2,9",
-                "column_settings": sufixo("pct_notas_criticas")},
-        sql="""-- As 10 combinações centro × disciplina obrigatória com maior parcela de notas críticas.
-select c.centro || ' · Disc. ' || f.id_disciplina as disciplina,
-       round(100.0 * sum(f.qtdnotas0_2_9)
-             / sum(f.qtdnotas0_2_9 + f.qtdnotas3_6_9 + f.qtdnotas7_7_9 + f.qtdnotas8_8_9 + f.qtdnotas9_10), 1)
-         as pct_notas_criticas
-from fatorendimentodisciplina f
-join curso c on c.id_curso = f.id_curso
-join disciplina d on d.id_disciplina = f.id_disciplina
-where d.tipo = 'Obrigatória' and f.id_disciplina <> 101
-group by c.centro, f.id_disciplina
-order by pct_notas_criticas desc
-limit 10""",
-        altura=8,
-    ),
-    dict(
         nome="2.3a Aprovação por nota ao longo dos semestres (%)",
         tipo="line",
         config={"graph.dimensions": ["semestre", "grupo"], "graph.metrics": ["pct_aprovacao"],
@@ -351,7 +337,7 @@ order by 1, 2""",
         nome="2.7a Mediana das notas por disciplina e horário",
         tipo="bar",
         config={"graph.dimensions": ["disciplina", "horario"], "graph.metrics": ["mediana_notas"],
-                "graph.show_values": True, "graph.y_axis.title_text": "Mediana das notas",
+                "graph.show_values": False, "graph.y_axis.title_text": "Mediana das notas",
                 "series_settings": cores(**{"Seg/Qua – manhã": AZUL, "Ter/Qui – noite": ROXO})},
         sql="""-- Horário traduzido: 2 = segunda, 3 = terça, 4 = quarta, 5 = quinta; M = manhã, N = noite.
 select 'Disc. ' || f.id_disciplina as disciplina,
@@ -369,10 +355,11 @@ order by f.id_disciplina, t.horario""",
         nome="2.7b Reprovação por falta por disciplina e horário (%)",
         tipo="bar",
         config={"graph.dimensions": ["disciplina", "horario"], "graph.metrics": ["pct_reprov_falta"],
-                "graph.show_values": True, "graph.y_axis.title_text": "% reprovados por falta",
+                "graph.show_values": False, "graph.y_axis.title_text": "% reprovados por falta",
                 "column_settings": sufixo("pct_reprov_falta"),
                 "series_settings": cores(**{"Seg/Qua – manhã": AZUL, "Ter/Qui – noite": ROXO})},
-        sql="""select 'Disc. ' || f.id_disciplina as disciplina,
+        sql="""-- Reprovados por falta ÷ matriculados, mesma disciplina em horários diferentes.
+select 'Disc. ' || f.id_disciplina as disciplina,
        case t.horario when '24M12' then 'Seg/Qua – manhã' when '35N12' then 'Ter/Qui – noite' else t.horario end
          as horario,
        round(100.0 * sum(f.qtdreprovacoesfalta) / sum(f.qtdmatriculados), 1) as pct_reprov_falta
@@ -384,12 +371,59 @@ order by f.id_disciplina, t.horario""",
         altura=8,
     ),
     dict(
+        nome="2.4 Disciplinas obrigatórias mais críticas por centro (% de notas de 0 a 2,9)",
+        tipo="row",
+        config={"graph.dimensions": ["disciplina"], "graph.metrics": ["pct_notas_criticas"],
+                "graph.show_values": True, "graph.y_axis.title_text": "% das notas entre 0 e 2,9",
+                "column_settings": sufixo("pct_notas_criticas")},
+        sql="""-- As 10 combinações centro × disciplina obrigatória com maior parcela de notas críticas.
+select c.centro || ' · Disc. ' || f.id_disciplina as disciplina,
+       round(100.0 * sum(f.qtdnotas0_2_9)
+             / sum(f.qtdnotas0_2_9 + f.qtdnotas3_6_9 + f.qtdnotas7_7_9 + f.qtdnotas8_8_9 + f.qtdnotas9_10), 1)
+         as pct_notas_criticas
+from fatorendimentodisciplina f
+join curso c on c.id_curso = f.id_curso
+join disciplina d on d.id_disciplina = f.id_disciplina
+where d.tipo = 'Obrigatória' and f.id_disciplina <> 101
+group by c.centro, f.id_disciplina
+order by pct_notas_criticas desc
+limit 10""",
+        altura=8,
+    ),
+    dict(
+        nome="2.5 Co-docência: aprovação e amplitude das notas por nº de professores",
+        tipo="combo",
+        config={"graph.dimensions": ["grupo"], "graph.metrics": ["pct_aprovacao", "amplitude_media"],
+                "graph.show_values": True, "column_settings": sufixo("pct_aprovacao"),
+                "series_settings": {"pct_aprovacao": {"display": "bar", "color": VERDE, "axis": "left",
+                                                      "title": "% aprovados por nota"},
+                                    "amplitude_media": {"display": "line", "color": ROXO, "axis": "right",
+                                                        "title": "Amplitude média (maior − menor nota)"}}},
+        sql="""-- Taxa de aprovação por nota (barras) e amplitude média das notas, maior − menor (linha, eixo direito),
+-- por número de professores da turma.
+with turmas as (
+    select f.*, 1 + (t.id_professor2 is not null)::int + (t.id_professor3 is not null)::int as n_prof
+    from fatorendimentodisciplina f
+    join turmadisciplina t on t.id_turmadisciplina = f.id_turmadisciplina
+    where f.id_disciplina <> 101
+)
+select case n_prof when 1 then 'Docente único' else n_prof || ' professores' end
+         || ' (' || count(distinct id_turmadisciplina) || ' turmas)' as grupo,
+       round(100.0 * sum(qtdaprovacoesnota) / sum(qtdmatriculados), 1) as pct_aprovacao,
+       round(avg(maiornota - menornota), 2) as amplitude_media
+from turmas
+group by n_prof
+order by n_prof""",
+        altura=8,
+    ),
+    dict(
         nome="2.6 Matriculados por semestre e modalidade de ensino",
         tipo="area",
         config={"graph.dimensions": ["semestre", "modalidade"], "graph.metrics": ["matriculados"],
                 "stackable.stack_type": "stacked", "graph.show_values": True,
                 "series_settings": cores(Presencial=AZUL, EAD=VERDE)},
-        sql="""select d.anosemestre as semestre, c.modalidadeensino as modalidade, sum(f.qtdmatriculados) as matriculados
+        sql="""-- Área empilhada: a altura total é a demanda do semestre; cada cor, a parcela da modalidade.
+select d.anosemestre as semestre, c.modalidadeensino as modalidade, sum(f.qtdmatriculados) as matriculados
 from fatorendimentodisciplina f
 join data d on d.id_data = f.id_data
 join curso c on c.id_curso = f.id_curso
@@ -399,12 +433,18 @@ order by 1, 2""",
     ),
 ]
 
-AVISO_FALTANTES = (
-    "**Consultas que o esquema atual não permite calcular**\n\n"
-    "- **1.5.2 Alunos retidos** e **1.7 Situação de integralização**: precisam de `Curso.cargaHorariaTotal`.\n"
-    "- **2.5 Co-docência**: `TurmaDisciplina.id_professor2` existe, mas os dados de exemplo ainda não têm "
-    "turmas com mais de um professor."
-)
+# Abas do dashboard, uma por esquema do documento: (prefixo do nome da pergunta, título, aviso no fim da aba)
+ABAS = [
+    ("1.", "Esquema 1 – Rendimento do aluno",
+     "**Consultas que o esquema atual não permite calcular:** **1.5.2 Alunos retidos** e "
+     "**1.7 Situação de integralização** precisam de `Curso.cargaHorariaTotal`."),
+    ("2.", "Esquema 2 – Rendimento da disciplina", None),
+]
+
+
+def descricao(sql):
+    """Os comentários '--' do SQL viram o texto do ícone ⓘ do gráfico."""
+    return " ".join(l[2:].strip() for l in sql.splitlines() if l.startswith("--")) or None
 
 
 def chamar(metodo, caminho, corpo=None, sessao=None):
@@ -447,39 +487,48 @@ def variaveis_da_pergunta(pergunta):
 
 
 def layout(perguntas_ids):
-    """Duas colunas de 12; cada linha usa a altura do maior cartão do par."""
-    cartoes, linha = [], 0
-    for i in range(0, len(perguntas_ids), 2):
-        par = perguntas_ids[i:i + 2]
-        altura = max(p["altura"] for p, _ in par)
-        for j, (pergunta, card_id) in enumerate(par):
-            cartoes.append({"pergunta": pergunta, "card_id": card_id, "row": linha, "col": j * 12,
-                            "size_x": 12 if len(par) == 2 else 24, "size_y": altura})
-        linha += altura
-    return cartoes, linha
+    """Uma aba por esquema; em cada aba, duas colunas de 12 (a linha usa a altura do maior cartão do par)
+    e o aviso das consultas faltantes no fim (se houver)."""
+    cartoes = []
+    for n_aba, (prefixo, _titulo, aviso) in enumerate(ABAS, start=1):
+        da_aba = [x for x in perguntas_ids if x[0]["nome"].startswith(prefixo)]
+        linha = 0
+        for i in range(0, len(da_aba), 2):
+            par = da_aba[i:i + 2]
+            altura = max(p["altura"] for p, _ in par)
+            for j, (pergunta, card_id) in enumerate(par):
+                cartoes.append({"pergunta": pergunta, "card_id": card_id, "aba": -n_aba, "row": linha,
+                                "col": j * 12, "size_x": 12 if len(par) == 2 else 24, "size_y": altura})
+            linha += altura
+        if aviso:
+            cartoes.append({"pergunta": None, "card_id": None, "aba": -n_aba, "texto": aviso, "row": linha,
+                            "col": 0, "size_x": 24, "size_y": 2})
+    return cartoes
 
 
 def montar_dashboard(dash, perguntas_ids, sessao):
-    cartoes, fim = layout(perguntas_ids)
+    cartoes = layout(perguntas_ids)
+    abas = [{"id": -n, "name": titulo} for n, (_prefixo, titulo, _aviso) in enumerate(ABAS, start=1)]
 
     def dashcards(com_filtros, com_texto):
         lista = []
-        for n, c in enumerate(cartoes, start=1):
+        for c in cartoes:
+            base = {"id": -(len(lista) + 1), "dashboard_tab_id": c["aba"], "row": c["row"], "col": c["col"],
+                    "size_x": c["size_x"], "size_y": c["size_y"]}
+            if c["card_id"] is None:
+                if com_texto:
+                    lista.append({**base, "card_id": None, "parameter_mappings": [], "visualization_settings": {
+                        "virtual_card": {"name": None, "display": "text", "visualization_settings": {},
+                                         "dataset_query": {}, "archived": False},
+                        "text": c["texto"]}})
+                continue
             mapeamentos = []
             if com_filtros:
                 for nome, (_rotulo, _padrao, filtro) in c["pergunta"].get("variaveis", {}).items():
                     mapeamentos.append({"parameter_id": filtro, "card_id": c["card_id"],
                                         "target": ["variable", ["template-tag", nome]]})
-            lista.append({"id": -n, "card_id": c["card_id"], "row": c["row"], "col": c["col"],
-                          "size_x": c["size_x"], "size_y": c["size_y"], "visualization_settings": {},
+            lista.append({**base, "card_id": c["card_id"], "visualization_settings": {},
                           "parameter_mappings": mapeamentos})
-        if com_texto:
-            lista.append({"id": -(len(lista) + 1), "card_id": None, "row": fim, "col": 0, "size_x": 24, "size_y": 3,
-                          "parameter_mappings": [],
-                          "visualization_settings": {
-                              "virtual_card": {"name": None, "display": "text", "visualization_settings": {},
-                                               "dataset_query": {}, "archived": False},
-                              "text": AVISO_FALTANTES}})
         return lista
 
     def filtros(com_opcoes):
@@ -500,13 +549,14 @@ def montar_dashboard(dash, perguntas_ids, sessao):
         ("com filtros", dashcards(True, False), filtros(False)),
         ("sem filtros (use os filtros de cada pergunta)", dashcards(False, False), []),
     ]
-    for descricao, cards, params in tentativas:
+    for versao, cards, params in tentativas:
         try:
-            chamar("PUT", f"/api/dashboard/{dash}", {"parameters": params, "dashcards": cards}, sessao)
-            print(f"Dashboard montado {descricao}.", flush=True)
+            chamar("PUT", f"/api/dashboard/{dash}",
+                   {"parameters": params, "dashcards": cards, "tabs": abas, "width": "full"}, sessao)
+            print(f"Dashboard montado {versao}.", flush=True)
             return
         except RuntimeError as erro:
-            print(f"Não deu para montar o dashboard {descricao}: {erro}", flush=True)
+            print(f"Não deu para montar o dashboard {versao}: {erro}", flush=True)
     sys.exit("Não foi possível montar o dashboard.")
 
 
@@ -536,6 +586,14 @@ def main():
         print("Coleção já existe; nada a fazer. Para recriar: docker compose down -v && docker compose up -d")
         return
 
+    # Interface em português e números no formato brasileiro (12,5% em vez de 12.5%).
+    for chave, valor in [("site-locale", "pt_BR"),
+                         ("custom-formatting", {"type/Number": {"number_separators": ",."}})]:
+        try:
+            chamar("PUT", f"/api/setting/{chave}", {"value": valor}, sessao)
+        except RuntimeError as erro:
+            print(f"Não deu para ajustar {chave}: {erro}", flush=True)
+
     print("Conectando o banco idw...", flush=True)
     banco = chamar("POST", "/api/database", {
         "engine": "postgres", "name": "IDW",
@@ -551,7 +609,7 @@ def main():
     perguntas_ids = []
     for p in PERGUNTAS:
         carta = chamar("POST", "/api/card", {
-            "name": p["nome"], "collection_id": colecao, "display": p["tipo"],
+            "name": p["nome"], "description": descricao(p["sql"]), "collection_id": colecao, "display": p["tipo"],
             "dataset_query": {"type": "native", "database": banco,
                               "native": {"query": p["sql"], "template-tags": variaveis_da_pergunta(p)}},
             "visualization_settings": {**CONFIG_PADRAO, **p["config"]},
