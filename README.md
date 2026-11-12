@@ -14,7 +14,8 @@ docker compose up -d
 - Metabase: http://localhost:3000
 
 A primeira inicialização leva alguns minutos. O serviço `metabase-setup` espera o Metabase subir e configura tudo
-sozinho: cria o admin de demonstração, conecta o banco `idw` e importa as 10 perguntas e o dashboard.
+sozinho: cria o admin de demonstração, conecta o banco `idw` e importa as 15 perguntas do documento
+"Consultas em Linguagem Natural" e o dashboard, com filtros de disciplina, departamento, semestre e turno/modalidade.
 Acompanhe com `docker compose logs -f metabase-setup`; ao final ele mostra o link do dashboard.
 
 **Login do Metabase (somente demonstração, dados fictícios):**
@@ -48,12 +49,15 @@ Se a porta 3000 ou 5433 já estiver em uso, pare o outro serviço ou altere as p
 - `db/03_seed_extra_pt.sql`: povoamento adicional, determinístico e em português (7 cursos, 11 professores,
   8 disciplinas, 6 semestres, 201 alunos, ~2.900 registros de rendimento).
 - `metabase/configurar.py`: configuração automática do Metabase (admin, banco, perguntas e dashboard).
-- `consultas/consultas.sql`: as mesmas consultas em SQL puro, para usar fora do Metabase.
+- `consultas/consultas.sql`: as mesmas consultas em SQL puro, para usar fora do Metabase (gerado a partir de `metabase/configurar.py`).
 
 ## Observações sobre o esquema
 
 - `qtdNotas0_2,9` (e as demais faixas) viraram `qtdNotas0_2_9`, porque a vírgula não é válida em identificador.
 - O curso 1 do PDF foi ajustado para `modalidadeEnsino = 'Presencial'` (necessário para as consultas presencial × EAD).
-- `Disciplina` não tem nome, e `TurmaDisciplina` só tem `id_professor1`; por isso a consulta de co-docência
-  (2.5 do PDF) não é respondível com este esquema.
+- `Disciplina` não tem nome; nos gráficos as disciplinas aparecem como "Disc. 102" etc.
+- `TurmaDisciplina` não tem `id_disciplina` (a disciplina da turma está nas tabelas fato) e tem `id_professor2` e
+  `id_professor3`, mas os dados de exemplo ainda não têm turmas com mais de um professor; por isso a consulta de
+  co-docência (2.5) ainda não entra no dashboard.
+- `Curso` não tem `cargaHorariaTotal`, então as consultas 1.5.2 (retidos) e 1.7 (integralização) também ficam de fora.
 - Todos os dados, inclusive CPFs, são fictícios.
