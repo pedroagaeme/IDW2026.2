@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: idw_local
       POSTGRES_DB: idw
     ports:
-      - "5433:5432"
+      - "5434:5432"
     volumes:
       - ./db:/docker-entrypoint-initdb.d:ro
       - idw_pgdata:/var/lib/postgresql/data

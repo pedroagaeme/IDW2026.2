@@ -2,14 +2,17 @@
 
 1. espera o Metabase subir;
 2. cria o admin de demonstração (somente se o Metabase ainda não foi configurado);
-3. conecta o banco `idw` do PostgreSQL;
+3. conecta o banco `idw` do PostgreSQL e espera a sincronização dos campos;
 4. cria a coleção, as perguntas SQL do documento "Consultas em Linguagem Natural" e o dashboard,
-   com os filtros (disciplina, departamento, semestre...) ligados às perguntas.
+   com filtros ligados às colunas do banco (semestre, curso, perfil do aluno, disciplina...).
 
 Se a coleção já existir, nada é recriado. Usa apenas a biblioteca padrão do Python.
+
+`python configurar.py --sql` imprime as consultas em SQL puro (sem filtros), que é o consultas/consultas.sql.
 """
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -29,15 +32,7 @@ AZUL, VERDE, ROXO, VERMELHO, AMARELO, LARANJA, CINZA = (
     "#509EE3", "#88BF4D", "#A989C5", "#EF8C8C", "#F9D45C", "#F2A86F", "#949AAB")
 FAIXAS_NOTA = ["#ED6E6E", "#F2A86F", "#F9D45C", "#A7D07C", "#84BB4C"]  # do vermelho (0 a 2,9) ao verde (9 a 10)
 
-# Expressões reutilizadas
-# Faltas contadas em horas-aula: % de faltas = faltas ÷ carga horária da disciplina (nunca passa de 100%,
-# e é coerente com a reprovação por falta dos dados de exemplo).
-PCT_FALTAS = "100.0 * f.qtdfaltas / d.cargahoraria"
 DISCIPLINAS = [f"Disc. {i}" for i in range(102, 122)]
-DEPARTAMENTOS = ["Administração", "Computação", "Engenharia Civil", "Física", "Letras", "Medicina",
-                 "Sistemas de Informação"]
-SEMESTRES = ["2023.1", "2023.2", "2024.1", "2024.2", "2025.1", "2025.2"]
-
 
 # Valem para todos os gráficos: sem o grupo automático "Other" (que soma as últimas categorias e gera
 # valores que não existem) e com todos os rótulos de valor visíveis.
@@ -54,33 +49,121 @@ def cores(**por_serie):
     return {serie: {"color": cor} for serie, cor in por_serie.items()}
 
 
-# Filtros do dashboard: (id, nome, slug, valor padrão, opções)
-FILTROS = [
-    ("f_disc13", "Disciplina (1.3)", "disciplina_1_3", "Disc. 105", DISCIPLINAS),
-    ("f_sem13", "Semestre (1.3)", "semestre_1_3", "2025.2", SEMESTRES),
-    ("f_faixa13", "Faixa etária (1.3)", "faixa_etaria_1_3", None, ["18-20", "21-25", "26-30", "31+"]),
-    ("f_dep151", "Departamento (1.5.1)", "departamento_1_5_1", None, DEPARTAMENTOS),
-    ("f_sem151", "Semestre (1.5.1)", "semestre_1_5_1", None, SEMESTRES),
-    ("f_disc21", "Disciplina (2.1)", "disciplina_2_1", "Disc. 102", DISCIPLINAS),
-    ("f_seg23", "Separar por (2.3)", "separar_por_2_3", "Turno", ["Turno", "Modalidade"]),
-]
+# Bases das perguntas: o {de} do SQL vira o FROM com os joins, sempre com os mesmos apelidos,
+# e os filtros do dashboard entram em {filtros} conforme os apelidos que a base tem.
+BASES = {
+    "aluno": ("""aluno a
+    join curso c on c.id_curso = a.id_curso""", {"a", "c"}),
+    "fato_aluno": ("""fatorendimentoaluno f
+    join aluno a on a.id_aluno = f.id_aluno
+    join curso c on c.id_curso = f.id_curso
+    join data dt on dt.id_data = f.id_data
+    join disciplina d on d.id_disciplina = f.id_disciplina
+    join turmaaluno ta on ta.id_turmaaluno = f.id_turmaaluno""", {"a", "c", "dt", "d", "ta"}),
+    "aluno_coorte": ("""aluno a
+    join curso c on c.id_curso = a.id_curso
+    join (select distinct id_aluno, id_turmaaluno from fatorendimentoaluno) fa on fa.id_aluno = a.id_aluno
+    join turmaaluno ta on ta.id_turmaaluno = fa.id_turmaaluno""", {"a", "c", "ta"}),
+    "fato_disciplina": ("""fatorendimentodisciplina f
+    join curso c on c.id_curso = f.id_curso
+    join data dt on dt.id_data = f.id_data
+    join disciplina d on d.id_disciplina = f.id_disciplina
+    join turmadisciplina t on t.id_turmadisciplina = f.id_turmadisciplina""", {"c", "dt", "d", "t"}),
+}
 
-# Cada pergunta: nome, tipo de gráfico, configurações, SQL, variáveis {nome: (rótulo, padrão, filtro do dashboard)},
-# altura no dashboard. Variáveis com padrão são obrigatórias; sem padrão, o trecho [[...]] some quando vazio.
-# Os comentários "--" do início do SQL viram a descrição do gráfico (ícone ⓘ no dashboard).
-# A ordem da lista é a do dashboard, em pares lado a lado dentro de cada aba (a 2.4 fica no fim para
-# manter os pares 2.3a/b e 2.7a/b).
+# Filtros do dashboard ligados a colunas do banco (as opções vêm do próprio banco e aceitam vários valores):
+# (chave, nome no dashboard, tabela, coluna, apelido na base, tipo)
+# Ficam visíveis só nas abas em que alguma pergunta usa o filtro.
+FILTROS_CAMPO = [
+    # recorte institucional
+    ("semestre", "Semestre", "data", "anosemestre", "dt", "string/="),
+    ("centro", "Centro", "curso", "centro", "c", "string/="),
+    ("campus", "Campus", "curso", "campim", "c", "string/="),
+    ("departamento", "Curso / departamento", "curso", "departamento", "c", "string/="),
+    ("turno", "Turno do curso", "curso", "turno", "c", "string/="),
+    ("modalidade", "Modalidade de ensino", "curso", "modalidadeensino", "c", "string/="),
+    ("grau", "Grau", "curso", "modalidadecurso", "c", "string/="),
+    # disciplina
+    ("tipo_disciplina", "Tipo de disciplina", "disciplina", "tipo", "d", "string/="),
+    ("disciplina", "Disciplinas (código)", "disciplina", "id_disciplina", "d", "number/="),
+    # perfil do aluno
+    ("coorte", "Coorte de ingresso", "turmaaluno", "anosemestreingresso", "ta", "string/="),
+    ("forma_ingresso", "Forma de ingresso", "aluno", "formaingresso", "a", "string/="),
+    ("cota", "Tipo de cota", "aluno", "tipocota", "a", "string/="),
+    ("faixa_economica", "Faixa econômica", "aluno", "faixaeconomica", "a", "string/="),
+    ("escola", "Escola do ensino médio", "aluno", "escolaensinomedio", "a", "string/="),
+    ("genero", "Gênero", "aluno", "genero", "a", "string/="),
+    ("raca", "Raça/etnia", "aluno", "raca_etnia", "a", "string/="),
+    ("faixa_etaria", "Faixa etária", "aluno", "faixaetaria", "a", "string/="),
+    ("deficiencia", "Deficiência", "aluno", "deficiencia", "a", "string/="),
+]
+# Opções de um filtro limitadas pelas de outro (ex.: só os departamentos do centro escolhido)
+FILTROS_LIGADOS = {"departamento": ["centro", "campus"], "campus": ["centro"]}
+
+# Filtros de texto de perguntas específicas: (id, nome, slug, valor padrão, opções)
+FILTROS_TEXTO = [
+    ("f_foco", "Disciplina em foco", "disciplina_em_foco", "Disc. 105", DISCIPLINAS),
+    ("f_separar", "Separar evolução por", "separar_evolucao_por", "Turno", ["Turno", "Modalidade"]),
+]
+FOCO = {"foco": ("Disciplina em foco", "Disc. 105", "f_foco")}
+SEPARAR = {"separar_por": ("Separar por", "Turno", "f_separar")}
+
+# Situação de integralização de cada aluno ativo no último semestre da dimensão Data (consultas 1.5.2 e 1.7).
+# n = semestres decorridos desde o ingresso; ritmo regular = cargaHorariaTotal ÷ tempoMinimoConcluir por semestre.
+SITUACAO = """with ref as (select ano, semestre from data order by ano desc, semestre desc limit 1),
+alunos as (
+    select c.departamento as curso, a.cargahorariaintegralizadaatual as ch, c.cargahorariatotal as total,
+           c.tempominimoconcluir as tmin, c.tempomaximoconcluir as tmax,
+           (r.ano - ta.anoingresso) * 2 + (r.semestre - ta.semestreingresso) + 1 as n
+    from {de}
+    cross join ref r
+    where a.tipoevasao is null and c.cargahorariatotal is not null
+{filtros}
+),
+situacao as (
+    select curso, case
+        when n > tmax then 'Acima do tempo máximo'
+        when (total - ch) / (total * 1.0 / tmin) > tmax - n then 'Em risco de ultrapassar o tempo máximo'
+        when ch < total * least(n, tmin) * 1.0 / tmin then 'Atrasado'
+        else 'Dentro do fluxo' end as situacao
+    from alunos
+)"""
+SITUACAO_NOTAS = """-- Alunos ativos no último semestre. Acima do tempo máximo: semestres decorridos > tempoMaximoConcluir.
+-- Em risco: no ritmo regular (cargaHorariaTotal ÷ tempoMinimoConcluir por semestre), o que falta não cabe até o tempo máximo.
+-- Atrasado: carga integralizada abaixo da esperada para os semestres decorridos. Dentro do fluxo: os demais.
+"""
+CORES_SITUACAO = {"dentro": ("Dentro do fluxo", VERDE), "atrasado": ("Atrasado", AMARELO),
+                  "em_risco": ("Em risco de ultrapassar o tempo máximo", LARANJA),
+                  "acima": ("Acima do tempo máximo", VERMELHO)}
+
+
+def series_situacao(*chaves):
+    return {k: {"title": CORES_SITUACAO[k][0], "color": CORES_SITUACAO[k][1]} for k in chaves}
+
+
+def colunas_situacao(*chaves):
+    return ",\n".join(f"       round(100.0 * count(*) filter (where situacao = '{CORES_SITUACAO[k][0]}') / count(*), 1)"
+                       f" as {k}" for k in chaves)
+
+
+# Cada pergunta: número no documento + nome, tipo de gráfico, configurações, base, SQL, variáveis de texto
+# {nome: (rótulo, padrão, filtro do dashboard)} e altura no dashboard. O número fica só na descrição.
+# Os comentários "--" do SQL viram a descrição do gráfico (ícone ⓘ no dashboard).
+# A ordem da lista é a do dashboard, em pares lado a lado dentro de cada aba.
 PERGUNTAS = [
     dict(
         nome="1.1 Evasão por forma de ingresso e cota (%)",
         tipo="row",
         config={"graph.dimensions": ["grupo"], "graph.metrics": ["pct_evasao"], "graph.show_values": True,
                 "graph.y_axis.title_text": "% de alunos evadidos", "column_settings": sufixo("pct_evasao")},
+        base="aluno",
         sql="""-- Só grupos com 10 alunos ou mais: grupos menores dão 0% ou valores extremos por acaso.
-select formaingresso || ' / ' || tipocota || ' (n=' || count(*) || ')' as grupo,
-       round(100.0 * count(*) filter (where tipoevasao is not null) / count(*), 1) as pct_evasao
-from aluno
-group by formaingresso, tipocota
+select a.formaingresso || ' / ' || a.tipocota || ' (n=' || count(*) || ')' as grupo,
+       round(100.0 * count(*) filter (where a.tipoevasao is not null) / count(*), 1) as pct_evasao
+from {de}
+where true
+{filtros}
+group by a.formaingresso, a.tipocota
 having count(*) >= 10
 order by pct_evasao desc""",
         altura=8,
@@ -93,14 +176,13 @@ order by pct_evasao desc""",
                 "series_settings": cores(**{"Baixa renda – com assistência": AZUL,
                                             "Baixa renda – sem assistência": LARANJA,
                                             "Média do curso": CINZA})},
+        base="fato_aluno",
         sql="""-- Assistência estudantil só existe na faixa Baixa; a média do curso serve de referência.
--- O curso 1 (registro de exemplo do PDF) tem um único aluno e fica de fora.
 with base as (
     select c.departamento as curso, a.faixaeconomica, a.assistenciaestudantil, f.medianota
-    from fatorendimentoaluno f
-    join aluno a on a.id_aluno = f.id_aluno
-    join curso c on c.id_curso = f.id_curso
-    where f.medianota is not null and f.id_curso <> 1
+    from {de}
+    where f.medianota is not null
+{filtros}
 )
 select curso,
        case when assistenciaestudantil then 'Baixa renda – com assistência'
@@ -121,14 +203,13 @@ order by curso, grupo""",
                 "graph.show_values": True, "graph.y_axis.title_text": "% de alunos que trancaram",
                 "column_settings": sufixo("pct_trancaram"),
                 "series_settings": cores(**{"Com assistência": AZUL, "Sem assistência": LARANJA})},
+        base="fato_aluno",
         sql="""-- Percentual de alunos (não de matrículas) que trancaram ao menos um período.
--- Atenção ao ler: no Matutino e no Vespertino há só 2 alunos sem assistência.
 with por_aluno as (
     select c.turno, a.assistenciaestudantil, a.id_aluno, bool_or(f.periodotrancado) as trancou
-    from fatorendimentoaluno f
-    join aluno a on a.id_aluno = f.id_aluno
-    join curso c on c.id_curso = f.id_curso
+    from {de}
     where a.faixaeconomica = 'Baixa'
+{filtros}
     group by 1, 2, 3
 )
 select turno,
@@ -141,28 +222,25 @@ order by case turno when 'Matutino' then 1 when 'Vespertino' then 2 when 'Noturn
         altura=8,
     ),
     dict(
-        nome="1.3 Nota × frequência por gênero (um ponto por aluno)",
+        nome="1.3 Nota × frequência por gênero na disciplina em foco",
         tipo="scatter",
         config={"graph.dimensions": ["nota", "genero"], "graph.metrics": ["frequencia"],
                 "graph.x_axis.title_text": "Nota", "graph.y_axis.title_text": "Frequência (%)",
                 "series_settings": cores(Feminino=ROXO, Masculino=AZUL)},
-        sql=f"""-- Escolha a disciplina, o semestre e, se quiser, a faixa etária nos filtros do dashboard.
--- O registro do PDF com faixa "20-25" entra em 21-25.
+        base="fato_aluno",
+        sql="""-- Um ponto por matrícula na "Disciplina em foco"; recorte por Faixa etária, Semestre etc. nos filtros.
+-- Acima de 1.500 matrículas, mostra uma amostra fixa de 1.500 (pontos demais viram uma mancha).
 select f.medianota as nota,
-       round(100 - {PCT_FALTAS}, 1) as frequencia,
+       round(100 - 100.0 * f.qtdfaltas / d.cargahoraria, 1) as frequencia,
        a.genero
-from fatorendimentoaluno f
-join aluno a on a.id_aluno = f.id_aluno
-join disciplina d on d.id_disciplina = f.id_disciplina
-join data dt on dt.id_data = f.id_data
+from {de}
 where not f.periodotrancado
   and f.medianota is not null
-  and 'Disc. ' || f.id_disciplina = {{{{disciplina}}}}
-  and dt.anosemestre = {{{{semestre}}}}
-  [[and case when a.faixaetaria = '20-25' then '21-25' else a.faixaetaria end = {{{{faixa_etaria}}}}]]""",
-        variaveis={"disciplina": ("Disciplina", "Disc. 105", "f_disc13"),
-                   "semestre": ("Semestre", "2025.2", "f_sem13"),
-                   "faixa_etaria": ("Faixa etária", None, "f_faixa13")},
+  and 'Disc. ' || f.id_disciplina = {{foco}}
+{filtros}
+order by md5(f.id_fatoaluno::text)
+limit 1500""",
+        variaveis=FOCO,
         altura=9,
     ),
     dict(
@@ -170,14 +248,14 @@ where not f.periodotrancado
         tipo="row",
         config={"graph.dimensions": ["bairro"], "graph.metrics": ["pct_faltas"], "graph.show_values": True,
                 "graph.y_axis.title_text": "% da carga horária", "column_settings": sufixo("pct_faltas")},
-        sql=f"""-- Faltas ÷ carga horária da disciplina, sem períodos trancados.
+        base="fato_aluno",
+        sql="""-- Faltas ÷ carga horária da disciplina, sem períodos trancados.
 -- A barra "MÉDIA GERAL" é a referência: bairros acima dela faltam mais que a média.
 with base as (
-    select a.bairroresidencia, a.id_aluno, {PCT_FALTAS} as pct
-    from fatorendimentoaluno f
-    join aluno a on a.id_aluno = f.id_aluno
-    join disciplina d on d.id_disciplina = f.id_disciplina
+    select a.bairroresidencia, a.id_aluno, 100.0 * f.qtdfaltas / d.cargahoraria as pct
+    from {de}
     where not f.periodotrancado
+{filtros}
 )
 select bairro, pct_faltas from (
     select bairroresidencia || ' (n=' || count(distinct id_aluno) || ')' as bairro, round(avg(pct), 1) as pct_faltas
@@ -198,22 +276,36 @@ order by pct_faltas desc""",
                 "graph.y_axis.title_text": "% das matrículas", "column_settings": sufixo("reprov_nota", "reprov_falta"),
                 "series_settings": {"reprov_nota": {"color": AMARELO, "title": "Reprovado por nota"},
                                     "reprov_falta": {"color": VERMELHO, "title": "Reprovado por falta"}}},
-        sql="""-- Reprovações ÷ matrículas (sem trancados), filtrável por departamento (Y) e semestre.
+        base="fato_aluno",
+        sql="""-- Reprovações ÷ matrículas (sem trancados). Use os filtros Curso / departamento (o Y da pergunta) e Semestre.
 -- A disciplina 101 (registro de exemplo do PDF) tem 1 matrícula e fica de fora.
 select 'Disc. ' || f.id_disciplina as disciplina,
        round(100.0 * count(*) filter (where f.statusaluno = 'Reprovado por Nota') / count(*), 1) as reprov_nota,
        round(100.0 * count(*) filter (where f.statusaluno = 'Reprovado por Falta') / count(*), 1) as reprov_falta
-from fatorendimentoaluno f
-join curso c on c.id_curso = f.id_curso
-join data dt on dt.id_data = f.id_data
+from {de}
 where not f.periodotrancado
   and f.id_disciplina <> 101
-  [[and c.departamento = {{departamento}}]]
-  [[and dt.anosemestre = {{semestre}}]]
+{filtros}
 group by f.id_disciplina
 order by count(*) filter (where f.statusaluno like 'Reprovado%') * 1.0 / count(*) desc""",
-        variaveis={"departamento": ("Departamento", None, "f_dep151"),
-                   "semestre": ("Semestre", None, "f_sem151")},
+        altura=12,
+    ),
+    dict(
+        nome="1.5.2 Alunos ativos retidos por curso (%)",
+        tipo="row",
+        config={"graph.dimensions": ["curso"], "graph.metrics": ["atrasado", "em_risco", "acima"],
+                "stackable.stack_type": "stacked", "graph.show_values": True,
+                "graph.y_axis.title_text": "% dos alunos ativos",
+                "column_settings": sufixo("atrasado", "em_risco", "acima"),
+                "series_settings": series_situacao("atrasado", "em_risco", "acima")},
+        base="aluno_coorte",
+        sql=SITUACAO_NOTAS + "-- Retido = Atrasado + Em risco + Acima do tempo máximo; cursos ordenados pelo total retido.\n"
+            + SITUACAO + """
+select curso || ' (n=' || count(*) || ')' as curso,
+""" + colunas_situacao("atrasado", "em_risco", "acima") + """
+from situacao
+group by curso
+order by count(*) filter (where situacao <> 'Dentro do fluxo') * 1.0 / count(*) desc""",
         altura=9,
     ),
     dict(
@@ -221,10 +313,14 @@ order by count(*) filter (where f.statusaluno like 'Reprovado%') * 1.0 / count(*
         tipo="row",
         config={"graph.dimensions": ["grupo"], "graph.metrics": ["pct_evasao"], "graph.show_values": True,
                 "graph.y_axis.title_text": "% de alunos evadidos", "column_settings": sufixo("pct_evasao")},
+        base="aluno",
         sql="""-- Cada característica analisada separadamente; "TAXA GERAL" é a referência.
 -- Evadidos e não evadidos têm faltas e notas quase iguais nestes dados, por isso barras em vez de Sankey.
 with base as (
-    select tipoevasao is not null as evadiu, faixaeconomica, raca_etnia, deficiencia from aluno
+    select a.tipoevasao is not null as evadiu, a.faixaeconomica, a.raca_etnia, a.deficiencia
+    from {de}
+    where true
+{filtros}
 ), grupos as (
     select 0 as ordem, 0 as sub, 'TAXA GERAL' as nome, count(*) as n, count(*) filter (where evadiu) as ev
     from base
@@ -246,7 +342,22 @@ order by ordem, sub, 100.0 * ev / n desc""",
         altura=9,
     ),
     dict(
-        nome="2.1 Resultados de cada professor na disciplina (%)",
+        nome="1.7 Situação de integralização dos alunos ativos por curso (%)",
+        tipo="row",
+        config={"graph.dimensions": ["curso"], "graph.metrics": ["dentro", "atrasado", "em_risco", "acima"],
+                "stackable.stack_type": "normalized", "graph.show_values": True,
+                "series_settings": series_situacao("dentro", "atrasado", "em_risco", "acima")},
+        base="aluno_coorte",
+        sql=SITUACAO_NOTAS + SITUACAO + """
+select curso || ' (n=' || count(*) || ')' as curso,
+""" + colunas_situacao("dentro", "atrasado", "em_risco", "acima") + """
+from situacao
+group by curso
+order by curso""",
+        altura=9,
+    ),
+    dict(
+        nome="2.1 Resultados de cada professor na disciplina em foco (%)",
         tipo="row",
         config={"graph.dimensions": ["professor"],
                 "graph.metrics": ["aprovados", "reprovados_nota", "reprovados_falta"],
@@ -254,14 +365,15 @@ order by ordem, sub, 100.0 * ev / n desc""",
                 "series_settings": {"aprovados": {"color": VERDE, "title": "Aprovados"},
                                     "reprovados_nota": {"color": AMARELO, "title": "Reprovados por nota"},
                                     "reprovados_falta": {"color": VERMELHO, "title": "Reprovados por falta"}}},
-        sql="""-- Escolha a disciplina no filtro do dashboard. "DISCIPLINA TODA" é a referência.
--- Professores ordenados pela taxa de reprovação total.
+        base="fato_disciplina",
+        sql="""-- Escolha a disciplina no filtro "Disciplina em foco". "DISCIPLINA TODA" é a referência.
+-- Professor responsável pela turma (id_professor1); ordenado pela taxa de reprovação total.
 with base as (
     select p.nome as professor, f.qtdaprovacoesnota as ap, f.qtdreprovacoesnota as rn, f.qtdreprovacoesfalta as rf
-    from fatorendimentodisciplina f
-    join turmadisciplina t on t.id_turmadisciplina = f.id_turmadisciplina
+    from {de}
     join professor p on p.id_professor = t.id_professor1
-    where 'Disc. ' || f.id_disciplina = {{disciplina}}
+    where 'Disc. ' || f.id_disciplina = {{foco}}
+{filtros}
 )
 select professor, aprovados, reprovados_nota, reprovados_falta from (
     select professor, sum(ap) as aprovados, sum(rn) as reprovados_nota, sum(rf) as reprovados_falta, 1 as ordem
@@ -271,7 +383,7 @@ select professor, aprovados, reprovados_nota, reprovados_falta from (
 ) t
 order by ordem, (reprovados_nota + reprovados_falta) * 1.0
                 / nullif(aprovados + reprovados_nota + reprovados_falta, 0) desc""",
-        variaveis={"disciplina": ("Disciplina", "Disc. 102", "f_disc21")},
+        variaveis=FOCO,
         altura=9,
     ),
     dict(
@@ -282,6 +394,7 @@ order by ordem, (reprovados_nota + reprovados_falta) * 1.0
                 "stackable.stack_type": "normalized", "graph.show_values": True,
                 "series_settings": cores(**dict(zip(["0 a 2,9", "3 a 6,9", "7 a 7,9", "8 a 8,9", "9 a 10"],
                                                     FAIXAS_NOTA)))},
+        base="fato_disciplina",
         sql="""-- Em 100% dá para comparar departamentos de tamanhos diferentes.
 -- Ordenado pela parcela de notas 8 ou mais.
 select c.departamento,
@@ -290,8 +403,9 @@ select c.departamento,
        sum(f.qtdnotas7_7_9) as "7 a 7,9",
        sum(f.qtdnotas8_8_9) as "8 a 8,9",
        sum(f.qtdnotas9_10)  as "9 a 10"
-from fatorendimentodisciplina f
-join curso c on c.id_curso = f.id_curso
+from {de}
+where true
+{filtros}
 group by 1
 order by (sum(f.qtdnotas8_8_9) + sum(f.qtdnotas9_10)) * 1.0
          / nullif(sum(f.qtdnotas0_2_9 + f.qtdnotas3_6_9 + f.qtdnotas7_7_9 + f.qtdnotas8_8_9 + f.qtdnotas9_10), 0) desc""",
@@ -302,16 +416,17 @@ order by (sum(f.qtdnotas8_8_9) + sum(f.qtdnotas9_10)) * 1.0
         tipo="line",
         config={"graph.dimensions": ["semestre", "grupo"], "graph.metrics": ["pct_aprovacao"],
                 "graph.y_axis.title_text": "% aprovados por nota", "column_settings": sufixo("pct_aprovacao")},
-        sql="""-- Aprovados por nota ÷ matriculados. Use o filtro "Separar por" (Turno ou Modalidade).
+        base="fato_disciplina",
+        sql="""-- Aprovados por nota ÷ matriculados. Use o filtro "Separar evolução por" (Turno ou Modalidade).
 select dt.anosemestre as semestre,
        case when lower({{separar_por}}) = 'modalidade' then c.modalidadeensino else c.turno end as grupo,
        round(100.0 * sum(f.qtdaprovacoesnota) / sum(f.qtdmatriculados), 1) as pct_aprovacao
-from fatorendimentodisciplina f
-join data dt on dt.id_data = f.id_data
-join curso c on c.id_curso = f.id_curso
+from {de}
+where true
+{filtros}
 group by 1, 2
 order by 1, 2""",
-        variaveis={"separar_por": ("Separar por", "Turno", "f_seg23")},
+        variaveis=SEPARAR,
         altura=8,
     ),
     dict(
@@ -319,18 +434,18 @@ order by 1, 2""",
         tipo="line",
         config={"graph.dimensions": ["semestre", "grupo"], "graph.metrics": ["pct_faltas"],
                 "graph.y_axis.title_text": "% da carga horária", "column_settings": sufixo("pct_faltas")},
+        base="fato_disciplina",
         sql="""-- Média de faltas ponderada pelos matriculados, convertida em % da carga horária da disciplina.
 select dt.anosemestre as semestre,
        case when lower({{separar_por}}) = 'modalidade' then c.modalidadeensino else c.turno end as grupo,
        round(sum(f.mediafaltas * f.qtdmatriculados / d.cargahoraria * 100) / sum(f.qtdmatriculados), 1)
          as pct_faltas
-from fatorendimentodisciplina f
-join data dt on dt.id_data = f.id_data
-join curso c on c.id_curso = f.id_curso
-join disciplina d on d.id_disciplina = f.id_disciplina
+from {de}
+where true
+{filtros}
 group by 1, 2
 order by 1, 2""",
-        variaveis={"separar_por": ("Separar por", "Turno", "f_seg23")},
+        variaveis=SEPARAR,
         altura=8,
     ),
     dict(
@@ -339,14 +454,15 @@ order by 1, 2""",
         config={"graph.dimensions": ["disciplina", "horario"], "graph.metrics": ["mediana_notas"],
                 "graph.show_values": False, "graph.y_axis.title_text": "Mediana das notas",
                 "series_settings": cores(**{"Seg/Qua – manhã": AZUL, "Ter/Qui – noite": ROXO})},
+        base="fato_disciplina",
         sql="""-- Horário traduzido: 2 = segunda, 3 = terça, 4 = quarta, 5 = quinta; M = manhã, N = noite.
 select 'Disc. ' || f.id_disciplina as disciplina,
        case t.horario when '24M12' then 'Seg/Qua – manhã' when '35N12' then 'Ter/Qui – noite' else t.horario end
          as horario,
        round(avg(f.medianotas), 2) as mediana_notas
-from fatorendimentodisciplina f
-join turmadisciplina t on t.id_turmadisciplina = f.id_turmadisciplina
+from {de}
 where f.id_disciplina <> 101
+{filtros}
 group by f.id_disciplina, t.horario
 order by f.id_disciplina, t.horario""",
         altura=8,
@@ -358,14 +474,15 @@ order by f.id_disciplina, t.horario""",
                 "graph.show_values": False, "graph.y_axis.title_text": "% reprovados por falta",
                 "column_settings": sufixo("pct_reprov_falta"),
                 "series_settings": cores(**{"Seg/Qua – manhã": AZUL, "Ter/Qui – noite": ROXO})},
+        base="fato_disciplina",
         sql="""-- Reprovados por falta ÷ matriculados, mesma disciplina em horários diferentes.
 select 'Disc. ' || f.id_disciplina as disciplina,
        case t.horario when '24M12' then 'Seg/Qua – manhã' when '35N12' then 'Ter/Qui – noite' else t.horario end
          as horario,
        round(100.0 * sum(f.qtdreprovacoesfalta) / sum(f.qtdmatriculados), 1) as pct_reprov_falta
-from fatorendimentodisciplina f
-join turmadisciplina t on t.id_turmadisciplina = f.id_turmadisciplina
+from {de}
 where f.id_disciplina <> 101
+{filtros}
 group by f.id_disciplina, t.horario
 order by f.id_disciplina, t.horario""",
         altura=8,
@@ -376,15 +493,15 @@ order by f.id_disciplina, t.horario""",
         config={"graph.dimensions": ["disciplina"], "graph.metrics": ["pct_notas_criticas"],
                 "graph.show_values": True, "graph.y_axis.title_text": "% das notas entre 0 e 2,9",
                 "column_settings": sufixo("pct_notas_criticas")},
+        base="fato_disciplina",
         sql="""-- As 10 combinações centro × disciplina obrigatória com maior parcela de notas críticas.
 select c.centro || ' · Disc. ' || f.id_disciplina as disciplina,
        round(100.0 * sum(f.qtdnotas0_2_9)
              / sum(f.qtdnotas0_2_9 + f.qtdnotas3_6_9 + f.qtdnotas7_7_9 + f.qtdnotas8_8_9 + f.qtdnotas9_10), 1)
          as pct_notas_criticas
-from fatorendimentodisciplina f
-join curso c on c.id_curso = f.id_curso
-join disciplina d on d.id_disciplina = f.id_disciplina
+from {de}
 where d.tipo = 'Obrigatória' and f.id_disciplina <> 101
+{filtros}
 group by c.centro, f.id_disciplina
 order by pct_notas_criticas desc
 limit 10""",
@@ -399,13 +516,14 @@ limit 10""",
                                                       "title": "% aprovados por nota"},
                                     "amplitude_media": {"display": "line", "color": ROXO, "axis": "right",
                                                         "title": "Amplitude média (maior − menor nota)"}}},
+        base="fato_disciplina",
         sql="""-- Taxa de aprovação por nota (barras) e amplitude média das notas, maior − menor (linha, eixo direito),
 -- por número de professores da turma.
 with turmas as (
     select f.*, 1 + (t.id_professor2 is not null)::int + (t.id_professor3 is not null)::int as n_prof
-    from fatorendimentodisciplina f
-    join turmadisciplina t on t.id_turmadisciplina = f.id_turmadisciplina
+    from {de}
     where f.id_disciplina <> 101
+{filtros}
 )
 select case n_prof when 1 then 'Docente único' else n_prof || ' professores' end
          || ' (' || count(distinct id_turmadisciplina) || ' turmas)' as grupo,
@@ -422,29 +540,58 @@ order by n_prof""",
         config={"graph.dimensions": ["semestre", "modalidade"], "graph.metrics": ["matriculados"],
                 "stackable.stack_type": "stacked", "graph.show_values": True,
                 "series_settings": cores(Presencial=AZUL, EAD=VERDE)},
+        base="fato_disciplina",
         sql="""-- Área empilhada: a altura total é a demanda do semestre; cada cor, a parcela da modalidade.
-select d.anosemestre as semestre, c.modalidadeensino as modalidade, sum(f.qtdmatriculados) as matriculados
-from fatorendimentodisciplina f
-join data d on d.id_data = f.id_data
-join curso c on c.id_curso = f.id_curso
+select dt.anosemestre as semestre, c.modalidadeensino as modalidade, sum(f.qtdmatriculados) as matriculados
+from {de}
+where true
+{filtros}
 group by 1, 2
 order by 1, 2""",
         altura=8,
     ),
 ]
 
-# Abas do dashboard, uma por esquema do documento: (prefixo do nome da pergunta, título, aviso no fim da aba)
-ABAS = [
-    ("1.", "Esquema 1 – Rendimento do aluno",
-     "**Consultas que o esquema atual não permite calcular:** **1.5.2 Alunos retidos** e "
-     "**1.7 Situação de integralização** precisam de `Curso.cargaHorariaTotal`."),
-    ("2.", "Esquema 2 – Rendimento da disciplina", None),
-]
+# Abas do dashboard, uma por esquema do documento: (prefixo do número da pergunta, título)
+ABAS = [("1.", "Esquema 1 – Rendimento do aluno"), ("2.", "Esquema 2 – Rendimento da disciplina")]
+
+TIPOS = {"row": "barras horizontais", "bar": "barras", "line": "linhas", "scatter": "dispersão",
+         "area": "área empilhada", "combo": "barras + linha"}
 
 
-def descricao(sql):
-    """Os comentários '--' do SQL viram o texto do ícone ⓘ do gráfico."""
-    return " ".join(l[2:].strip() for l in sql.splitlines() if l.startswith("--")) or None
+def numero(p):
+    return p["nome"].split(" ", 1)[0]
+
+
+def titulo(p):
+    return p["nome"].split(" ", 1)[1]
+
+
+def filtros_da(p):
+    """Filtros de campo que se aplicam à pergunta: os que usam tabelas presentes na base dela.
+    Perguntas da "Disciplina em foco" ignoram o filtro "Disciplinas" (os dois juntos podem não se cruzar)."""
+    apelidos = BASES[p["base"]][1]
+    return [f for f in FILTROS_CAMPO
+            if f[4] in apelidos and not (f[0] == "disciplina" and "foco" in p.get("variaveis", {}))]
+
+
+def sql_final(p):
+    linhas = "\n".join(f"  [[and {{{{{f[0]}}}}}]]" for f in filtros_da(p))
+    return p["sql"].replace("{de}", BASES[p["base"]][0]).replace("{filtros}", linhas)
+
+
+def sql_puro(p):
+    """SQL sem filtros opcionais e com as variáveis obrigatórias no valor padrão (para rodar fora do Metabase)."""
+    sql = re.sub(r"\n\s*\[\[.*?\]\]", "", sql_final(p))
+    for nome, (_rotulo, padrao, _filtro) in p.get("variaveis", {}).items():
+        sql = sql.replace(f"{{{{{nome}}}}}", f"'{padrao}'")
+    return sql
+
+
+def descricao(p):
+    """Número da consulta no documento + os comentários '--' do SQL (texto do ícone ⓘ do gráfico)."""
+    notas = " ".join(l[2:].strip() for l in p["sql"].splitlines() if l.startswith("--"))
+    return f"Consulta {numero(p)} do documento. {notas}".strip()
 
 
 def chamar(metodo, caminho, corpo=None, sessao=None):
@@ -475,22 +622,37 @@ def esperar_metabase(limite_s=900):
     sys.exit("O Metabase não respondeu a tempo.")
 
 
-def variaveis_da_pergunta(pergunta):
-    """Monta as template-tags (variáveis {{...}}) da pergunta SQL."""
+def esperar_campos(banco, sessao, limite_s=300):
+    """Espera o Metabase sincronizar o banco e devolve {(tabela, coluna): id do campo}."""
+    print("Aguardando a sincronização das tabelas...", flush=True)
+    precisa = {(f[2], f[3]) for f in FILTROS_CAMPO}
+    inicio = time.time()
+    while time.time() - inicio < limite_s:
+        meta = chamar("GET", f"/api/database/{banco}/metadata", sessao=sessao)
+        campos = {(t["name"], c["name"]): c["id"] for t in meta["tables"] for c in t["fields"]}
+        if precisa <= campos.keys():
+            return campos
+        time.sleep(5)
+    sys.exit(f"O Metabase não sincronizou as colunas: {sorted(precisa - campos.keys())}")
+
+
+def variaveis_da_pergunta(pergunta, campos):
+    """Monta as template-tags: variáveis de texto da pergunta + filtros de campo ligados às colunas."""
     tags = {}
     for nome, (rotulo, padrao, _filtro) in pergunta.get("variaveis", {}).items():
-        tag = {"id": str(uuid.uuid4()), "name": nome, "display-name": rotulo, "type": "text"}
-        if padrao is not None:
-            tag.update({"default": padrao, "required": True})
-        tags[nome] = tag
+        tags[nome] = {"id": str(uuid.uuid4()), "name": nome, "display-name": rotulo, "type": "text",
+                      "default": padrao, "required": True}
+    for chave, rotulo, tabela, coluna, apelido, tipo in filtros_da(pergunta):
+        tags[chave] = {"id": str(uuid.uuid4()), "name": chave, "display-name": rotulo, "type": "dimension",
+                       "dimension": ["field", campos[(tabela, coluna)], None], "widget-type": tipo,
+                       "alias": f"{apelido}.{coluna}"}
     return tags
 
 
 def layout(perguntas_ids):
-    """Uma aba por esquema; em cada aba, duas colunas de 12 (a linha usa a altura do maior cartão do par)
-    e o aviso das consultas faltantes no fim (se houver)."""
+    """Uma aba por esquema; em cada aba, duas colunas de 12 (a linha usa a altura do maior cartão do par)."""
     cartoes = []
-    for n_aba, (prefixo, _titulo, aviso) in enumerate(ABAS, start=1):
+    for n_aba, (prefixo, _titulo) in enumerate(ABAS, start=1):
         da_aba = [x for x in perguntas_ids if x[0]["nome"].startswith(prefixo)]
         linha = 0
         for i in range(0, len(da_aba), 2):
@@ -500,43 +662,38 @@ def layout(perguntas_ids):
                 cartoes.append({"pergunta": pergunta, "card_id": card_id, "aba": -n_aba, "row": linha,
                                 "col": j * 12, "size_x": 12 if len(par) == 2 else 24, "size_y": altura})
             linha += altura
-        if aviso:
-            cartoes.append({"pergunta": None, "card_id": None, "aba": -n_aba, "texto": aviso, "row": linha,
-                            "col": 0, "size_x": 24, "size_y": 2})
     return cartoes
 
 
 def montar_dashboard(dash, perguntas_ids, sessao):
     cartoes = layout(perguntas_ids)
-    abas = [{"id": -n, "name": titulo} for n, (_prefixo, titulo, _aviso) in enumerate(ABAS, start=1)]
+    abas = [{"id": -n, "name": nome} for n, (_prefixo, nome) in enumerate(ABAS, start=1)]
 
-    def dashcards(com_filtros, com_texto):
+    def dashcards(com_filtros):
         lista = []
         for c in cartoes:
             base = {"id": -(len(lista) + 1), "dashboard_tab_id": c["aba"], "row": c["row"], "col": c["col"],
                     "size_x": c["size_x"], "size_y": c["size_y"]}
-            if c["card_id"] is None:
-                if com_texto:
-                    lista.append({**base, "card_id": None, "parameter_mappings": [], "visualization_settings": {
-                        "virtual_card": {"name": None, "display": "text", "visualization_settings": {},
-                                         "dataset_query": {}, "archived": False},
-                        "text": c["texto"]}})
-                continue
             mapeamentos = []
             if com_filtros:
                 for nome, (_rotulo, _padrao, filtro) in c["pergunta"].get("variaveis", {}).items():
                     mapeamentos.append({"parameter_id": filtro, "card_id": c["card_id"],
                                         "target": ["variable", ["template-tag", nome]]})
+                for f in filtros_da(c["pergunta"]):
+                    mapeamentos.append({"parameter_id": f"p_{f[0]}", "card_id": c["card_id"],
+                                        "target": ["dimension", ["template-tag", f[0]]]})
             lista.append({**base, "card_id": c["card_id"], "visualization_settings": {},
                           "parameter_mappings": mapeamentos})
         return lista
 
     def filtros(com_opcoes):
         lista = []
-        for fid, nome, slug, padrao, opcoes in FILTROS:
-            f = {"id": fid, "name": nome, "slug": slug, "type": "string/="}
-            if padrao is not None:
-                f["default"] = [padrao]
+        for chave, nome, _tabela, _coluna, _apelido, tipo in FILTROS_CAMPO:
+            lista.append({"id": f"p_{chave}", "name": nome, "slug": chave, "type": tipo,
+                          "sectionId": tipo.split("/")[0],
+                          "filteringParameters": [f"p_{x}" for x in FILTROS_LIGADOS.get(chave, [])]})
+        for fid, nome, slug, padrao, opcoes in FILTROS_TEXTO:
+            f = {"id": fid, "name": nome, "slug": slug, "type": "string/=", "default": [padrao]}
             if com_opcoes:
                 f.update({"values_source_type": "static-list", "values_source_config": {"values": opcoes}})
             lista.append(f)
@@ -544,10 +701,9 @@ def montar_dashboard(dash, perguntas_ids, sessao):
 
     # Do mais completo ao mais simples: se uma versão do Metabase recusar algo, o dashboard sai mesmo assim.
     tentativas = [
-        ("com filtros, opções e aviso", dashcards(True, True), filtros(True)),
-        ("com filtros e opções", dashcards(True, False), filtros(True)),
-        ("com filtros", dashcards(True, False), filtros(False)),
-        ("sem filtros (use os filtros de cada pergunta)", dashcards(False, False), []),
+        ("com filtros e opções", dashcards(True), filtros(True)),
+        ("com filtros", dashcards(True), filtros(False)),
+        ("sem filtros (use os filtros de cada pergunta)", dashcards(False), []),
     ]
     for versao, cards, params in tentativas:
         try:
@@ -558,6 +714,17 @@ def montar_dashboard(dash, perguntas_ids, sessao):
         except RuntimeError as erro:
             print(f"Não deu para montar o dashboard {versao}: {erro}", flush=True)
     sys.exit("Não foi possível montar o dashboard.")
+
+
+def imprimir_sql():
+    sys.stdout.reconfigure(encoding="utf-8", newline="\n")
+    print('-- Consultas do documento "Consultas em Linguagem Natural", as mesmas que metabase/configurar.py cria '
+          "no Metabase.\n"
+          "-- Gerado por: python metabase/configurar.py --sql > consultas/consultas.sql (não edite à mão).\n"
+          "-- Sem os filtros do dashboard; variáveis obrigatórias no valor padrão.\n"
+          "-- Em PostgreSQL, os nomes sem aspas ficam em minúsculas (ex.: FatoRendimentoAluno -> fatorendimentoaluno).")
+    for p in PERGUNTAS:
+        print(f"\n-- {p['nome']}  [{TIPOS[p['tipo']]}]\n{sql_puro(p)};")
 
 
 def main():
@@ -601,6 +768,7 @@ def main():
                     "password": "idw_local", "ssl": False, "tunnel-enabled": False},
         "is_full_sync": True,
     }, sessao)["id"]
+    campos = esperar_campos(banco, sessao)
 
     colecao = chamar("POST", "/api/collection", {
         "name": COLECAO, "description": "Consultas do documento (dados sintéticos)"}, sessao)["id"]
@@ -609,9 +777,9 @@ def main():
     perguntas_ids = []
     for p in PERGUNTAS:
         carta = chamar("POST", "/api/card", {
-            "name": p["nome"], "description": descricao(p["sql"]), "collection_id": colecao, "display": p["tipo"],
+            "name": titulo(p), "description": descricao(p), "collection_id": colecao, "display": p["tipo"],
             "dataset_query": {"type": "native", "database": banco,
-                              "native": {"query": p["sql"], "template-tags": variaveis_da_pergunta(p)}},
+                              "native": {"query": sql_final(p), "template-tags": variaveis_da_pergunta(p, campos)}},
             "visualization_settings": {**CONFIG_PADRAO, **p["config"]},
         }, sessao)
         perguntas_ids.append((p, carta["id"]))
@@ -624,4 +792,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    imprimir_sql() if sys.argv[1:] == ["--sql"] else main()

@@ -1,7 +1,7 @@
 -- Povoamento básico, exatamente como no PDF (um registro por tabela).
 INSERT INTO Data VALUES (1, 2023, 1, '2023.1'), (2, 2023, 2, '2023.2');
 
-INSERT INTO Curso VALUES (1, 'Graduação', 8, 'Integral', 'Computação', 'CIn', 'Campus Recife', 'Presencial', 'Regular', 8, 14, '2020.1');
+INSERT INTO Curso VALUES (1, 'Graduação', 8, 3200, 'Integral', 'Computação', 'CIn', 'Campus Recife', 'Presencial', 'Regular', 8, 14, '2020.1');
 
 INSERT INTO Professor VALUES (1, 'Carlos Silva', '1980-05-12', 'Masculino', 'Boa Viagem', '111.222.333-44', 'Brasileira', 'Recife');
 

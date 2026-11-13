@@ -30,12 +30,12 @@ INSERT INTO Data VALUES
 -- Dimensão Curso
 -- --------------------------------------------------------
 INSERT INTO Curso VALUES
-    (2, 'Graduação', 8,  'Noturno',    'Sistemas de Informação',  'CIn',  'Campus Recife',   'Bacharelado',  'Presencial', 8,  14, '2019.1'),
-    (3, 'Graduação', 10, 'Integral',   'Engenharia Civil',        'CTG',  'Campus Recife',   'Bacharelado',  'Presencial', 10, 15, '2018.2'),
-    (4, 'Graduação', 12, 'Integral',   'Medicina',                'CCM',  'Campus Recife',   'Bacharelado',  'Presencial', 12, 18, '2017.1'),
-    (5, 'Graduação', 8,  'Noturno',    'Administração',           'CCSA', 'Ensino a Distância', 'Bacharelado', 'EAD',        8,  12, '2021.1'),
-    (6, 'Graduação', 8,  'Matutino',   'Letras',                  'CAC',  'Campus Recife',   'Licenciatura', 'Presencial', 8,  12, '2019.2'),
-    (7, 'Graduação', 8,  'Vespertino', 'Física',                  'CCEN', 'Campus Caruaru',  'Licenciatura', 'Presencial', 8,  14, '2020.2');
+    (2, 'Graduação', 8, 3000,  'Noturno',    'Sistemas de Informação',  'CIn',  'Campus Recife',   'Bacharelado',  'Presencial', 8,  14, '2019.1'),
+    (3, 'Graduação', 10, 3600, 'Integral',   'Engenharia Civil',        'CTG',  'Campus Recife',   'Bacharelado',  'Presencial', 10, 15, '2018.2'),
+    (4, 'Graduação', 12, 7200, 'Integral',   'Medicina',                'CCM',  'Campus Recife',   'Bacharelado',  'Presencial', 12, 18, '2017.1'),
+    (5, 'Graduação', 8, 3000,  'Noturno',    'Administração',           'CCSA', 'Ensino a Distância', 'Bacharelado', 'EAD',        8,  12, '2021.1'),
+    (6, 'Graduação', 8, 2800,  'Matutino',   'Letras',                  'CAC',  'Campus Recife',   'Licenciatura', 'Presencial', 8,  12, '2019.2'),
+    (7, 'Graduação', 8, 2800,  'Vespertino', 'Física',                  'CCEN', 'Campus Caruaru',  'Licenciatura', 'Presencial', 8,  14, '2020.2');
 
 -- --------------------------------------------------------
 -- Dimensão Professor (CPFs fictícios)
@@ -113,21 +113,21 @@ FROM (
 ) turmas;
 
 -- --------------------------------------------------------
--- Dimensão TurmaAluno: coortes de 2021.1 a 2024.2 (20231 já existe no PDF)
+-- Dimensão TurmaAluno: coortes de 2019.1 a 2024.2 (20231 já existe no PDF)
 -- --------------------------------------------------------
 INSERT INTO TurmaAluno
-SELECT (2021 + c / 2) * 10 + 1 + c % 2,
-       2021 + c / 2,
+SELECT (2019 + c / 2) * 10 + 1 + c % 2,
+       2019 + c / 2,
        1 + c % 2,
-       (2021 + c / 2)::text || '.' || (1 + c % 2)::text,
+       (2019 + c / 2)::text || '.' || (1 + c % 2)::text,
        8,
        14
-FROM generate_series(0, 7) AS c
+FROM generate_series(0, 11) AS c
 ON CONFLICT (id_turmaAluno) DO NOTHING;
 
 -- --------------------------------------------------------
 -- Dimensão Aluno: 5.000 alunos (ids 1002 a 6001)
--- A coorte do aluno é (i % 8): 0 = 2021.1, 1 = 2021.2, ..., 7 = 2024.2
+-- A coorte do aluno é (i % 12): 0 = 2019.1, 1 = 2019.2, ..., 11 = 2024.2
 -- Alunos evadidos têm ano/semestre de evasão entre 2023.2 e 2025.2
 -- --------------------------------------------------------
 INSERT INTO Aluno
@@ -147,9 +147,9 @@ WITH nomes AS (
 ),
 base AS (
     SELECT i,
-           i % 8                                    AS c,
-           2021 + (i % 8) / 2                       AS ano_ing,
-           1 + (i % 8) % 2                          AS sem_ing,
+           i % 12                                   AS c,
+           2019 + (i % 12) / 2                      AS ano_ing,
+           1 + (i % 12) % 2                         AS sem_ing,
            CASE WHEN i % 2 = 0 THEN 'Feminino' ELSE 'Masculino' END AS genero,
            CASE WHEN pseudo('fe' || i, 10) < 4 THEN 'Baixa'
                 WHEN pseudo('fe' || i, 10) < 8 THEN 'Média'
@@ -185,9 +185,15 @@ SELECT 1001 + e.i,
        CASE WHEN e.evadiu THEN 1 + (e.idx_evasao - 1) % 2 END,
        CASE WHEN e.evadiu THEN (ARRAY['Abandono','Abandono','Cancelamento','Transferência'])[1 + pseudo('te' || e.i, 4)] END,
        (e.faixa = 'Baixa' AND pseudo('as' || e.i, 10) < 6),
-       -- carga horária: semestres cursados até o último período ativo
-       LEAST(3200, ((CASE WHEN e.evadiu THEN e.idx_evasao - 1 ELSE 6 END) - ((e.ano_ing - 2023) * 2 + e.sem_ing) + 1)
-                    * (260 + pseudo('ch' || e.i, 100))),
+       -- carga horária: semestres cursados até o último período ativo × ritmo regular do curso
+       -- (cargaHorariaTotal ÷ duração) × ritmo do aluno: ~20% lentos (40% a 75% do regular; ~40% entre os de
+       -- baixa renda sem assistência) e os demais de 95% a 130%
+       LEAST(cu.cargaHorariaTotal,
+             ROUND(((CASE WHEN e.evadiu THEN e.idx_evasao - 1 ELSE 6 END) - ((e.ano_ing - 2023) * 2 + e.sem_ing) + 1)
+                   * cu.cargaHorariaTotal::numeric / cu.duracao
+                   * (CASE WHEN pseudo('rt' || e.i, 10) < CASE WHEN e.faixa = 'Baixa' AND pseudo('as' || e.i, 10) >= 6
+                                                               THEN 4 ELSE 2 END
+                           THEN 0.40 ELSE 0.95 END + pseudo('ch' || e.i, 100) * 0.0035))),
        -- nome: primeiro nome + sobrenome da mãe + sobrenome do pai
        CASE WHEN e.genero = 'Feminino' THEN n.fem[1 + pseudo('pn' || e.i, 20)] ELSE n.masc[1 + pseudo('pn' || e.i, 20)] END
            || ' ' || n.sob[1 + pseudo('sm' || e.i, 30)] || ' ' || n.sob[1 + pseudo('sp' || e.i, 30)],
@@ -206,7 +212,8 @@ SELECT 1001 + e.i,
        CASE WHEN pseudo('de' || e.i, 20) < 17 THEN 'Nenhuma'
             ELSE (ARRAY['Visual','Auditiva','Física'])[1 + pseudo('dt' || e.i, 3)] END,
        e.ano_ing - 1
-FROM ev2 e CROSS JOIN nomes n;
+FROM ev2 e CROSS JOIN nomes n
+JOIN Curso cu ON cu.id_curso = 1 + (e.i % 7);
 
 -- Faixa etária calculada pela idade em 31/12/2025
 UPDATE Aluno
@@ -231,13 +238,13 @@ WITH matriculas AS (
            (a.id_aluno - 1001)                                   AS i,
            p.p                                                   AS periodo,
            k.k                                                   AS k,
-           ((a.id_aluno - 1001) % 8)                             AS c
+           ((a.id_aluno - 1001) % 12)                            AS c
     FROM Aluno a
     CROSS JOIN generate_series(1, 6) AS p(p)
     CROSS JOIN generate_series(0, 4) AS k(k)
     WHERE a.id_aluno > 1001
       -- semestre >= início (ingresso ou 2023.1) e anterior à evasão
-      AND p.p >= GREATEST(1, ((2021 + ((a.id_aluno - 1001) % 8) / 2) - 2023) * 2 + 1 + ((a.id_aluno - 1001) % 8) % 2)
+      AND p.p >= GREATEST(1, ((2019 + ((a.id_aluno - 1001) % 12) / 2) - 2023) * 2 + 1 + ((a.id_aluno - 1001) % 12) % 2)
       AND p.p <= CASE WHEN a.anoEvasao IS NULL THEN 6
                       ELSE (a.anoEvasao - 2023) * 2 + a.semestreEvasao - 1 END
 ),
@@ -268,7 +275,7 @@ com_codocencia AS (
 )
 SELECT 1 + ROW_NUMBER() OVER (ORDER BY t.id_aluno, t.periodo, t.k),
        t.id_aluno,
-       (2021 + t.c / 2) * 10 + 1 + t.c % 2,
+       (2019 + t.c / 2) * 10 + 1 + t.c % 2,
        t.d,
        t.id_td,
        t.id_curso,
