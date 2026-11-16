@@ -68,6 +68,40 @@
    1. Existe diferença significativa na mediana de notas (medianaNotas) e nas reprovações por falta (qtdReprovaçõesFalta) para uma mesma disciplina quando lecionada em horários/períodos distintos (ex: matutino vs. nocturno)?  
       \*Motivação de exemplo: verificar se o horário de oferta está associado a diferenças de rendimento e de reprovação por falta 
 
+### **Consultas Estratégicas (visão da proposta de Data Warehouse sobre evasão)**
+
+Consultas acrescentadas a partir da proposta *"Proposta de um Data Warehouse para apoio à tomada de decisão sobre evasão institucional em uma IFES"* (docs/proposta). Elas cobrem o que a proposta define como essencial e que as consultas acima não tinham: a **taxa de evasão no período (TEA)** em série histórica (eq. 4.7 a 4.10), a **situação das coortes de ingresso** e a **caracterização dos evadidos** pelas variáveis da Tabela 6 (período letivo da evasão, rendimento, naturalidade). Todas usam os dois esquemas estrela existentes; o cálculo de retenção usa `Curso.cargaHorariaTotal`.
+
+1. **Indicadores-chave (KPIs) da gestão:**  
+   1. **E1.** Quantos alunos têm vínculo ativo hoje?  
+   2. **E2.** Qual a taxa de evasão no último semestre (TEA = evadidos no semestre ÷ matrículas no semestre) e como ela variou em relação ao semestre anterior?  
+   3. **E3.** Qual a taxa de aprovação das matrículas no último semestre e como variou em relação ao anterior?  
+   4. **E4.** Qual o percentual de alunos ativos retidos (atrasados, em risco ou acima do tempo máximo)?  
+      \*Motivação de exemplo: dar à Pró-Reitoria de Graduação e às coordenações uma leitura em segundos da situação atual, que muda conforme os filtros (curso, centro, perfil do aluno).
+
+2. **Série Histórica da Evasão:**  
+   1. **E5.** Como evoluiu a taxa de evasão no período (TEA) e o número de evadidos semestre a semestre?  
+   2. **E6.** Qual a TEA de cada curso em cada semestre, e quais cursos concentram a evasão?  
+      Matrículas do semestre = alunos que cursaram o semestre + alunos que evadiram nele.  
+      \*Motivação de exemplo: a proposta escolhe a TEA porque permite acompanhar a tendência no tempo; uma queda indica efeito das ações de permanência e uma alta aponta onde a instituição precisa atuar.
+
+3. **Fluxo das Coortes de Ingresso:**  
+   1. **E7.** De cada turma de ingresso (anoSemestreIngresso), qual percentual está hoje dentro do fluxo, atrasado, em risco de ultrapassar o tempo máximo, acima do tempo máximo ou evadido?  
+      \*Motivação de exemplo: método por coorte (grupo 2 da proposta), que mostra se turmas mais recentes estão evadindo ou ficando retidas mais cedo que as antigas.
+
+4. **Momento e Fatores da Evasão:**  
+   1. **E8.** Em que semestre do curso os alunos evadem, e por qual tipo de saída (tipoEvasao)?  
+      \*Motivação de exemplo: se a evasão se concentra nos primeiros semestres, a ação prioritária é o acolhimento e o nivelamento dos ingressantes.  
+   2. **E9.** Como a taxa de evasão varia conforme a taxa de reprovação do aluno (disciplinas reprovadas ÷ disciplinas cursadas)?  
+      Usa-se a taxa, e não o número de reprovações, porque quem evade cedo cursou menos disciplinas e teve menos chance de reprovar.  
+      \*Motivação de exemplo: validar a reprovação como sinal de alerta precoce, usado na lista de acompanhamento (E11).  
+   3. **E10.** Qual a taxa de evasão por naturalidade do aluno?  
+      \*Motivação de exemplo: a proposta usa a naturalidade no lugar do endereço atual (que muda e pode ser uma república) para avaliar se alunos de fora da região evadem mais.
+
+5. **Acompanhamento Individual:**  
+   1. **E11.** Quais alunos ativos apresentam sinais de risco de evasão (trancaram o último semestre, tiveram nota média abaixo de 5 ou mais de 25% de faltas nele, ou acumulam 4 ou mais reprovações)?  
+      \*Motivação de exemplo: transformar a análise em ação, entregando à coordenação a lista de quem procurar primeiro (com nome, matrícula, curso, coorte e % integralizado). Por conter dados pessoais, deve ficar restrita aos gestores responsáveis.
+
 ## **2\. Argumentação da Escolha de Gráficos**
 
 **Consulta 1.1 (Taxa de Evasão Acadêmica por Forma de Ingresso e Cota):**
@@ -128,6 +162,59 @@
   **Consulta 2.7 (Discrepância de Desempenho entre Períodos Horários):**  
 * **Gráfico:** Gráfico de Colunas Lado a Lado.  
 * **Justificativa:** O gráfico de colunas lado a lado compara diretamente a mediana de notas e as reprovações por falta para uma mesma disciplina lecionada em horários distintos (ex: matutino vs. noturno).
+
+**Consultas E1 a E4 (Indicadores-chave):**
+
+* **Gráfico:** Números em destaque (KPIs); E2 e E3 com indicador de tendência em relação ao semestre anterior.  
+* **Justificativa:** são a primeira coisa que o gestor lê no painel. A seta de tendência dispensa abrir o gráfico histórico para saber se a situação melhorou ou piorou (na TEA, subir é ruim e aparece em vermelho).
+
+**Consulta E5 (Evolução da TEA):**
+
+* **Gráfico:** Combinado: linha para a taxa de evasão (%) e barras, no eixo secundário, para o número de evadidos.  
+* **Justificativa:** reproduz o formato dos gráficos de evolução das taxas da proposta (taxa em um eixo, volumes absolutos no outro), mostrando se a variação vem da taxa ou só do tamanho das turmas.
+
+**Consulta E6 (Mapa de calor da evasão):**
+
+* **Gráfico:** Tabela com escala de cor (mapa de calor): cursos nas linhas, semestres nas colunas.  
+* **Justificativa:** com vários cursos e semestres, um gráfico de linhas fica poluído; a cor destaca de imediato os pontos críticos e a coluna "Período" ordena os cursos.
+
+**Consulta E7 (Situação das coortes):**
+
+* **Gráfico:** Colunas empilhadas em 100%, uma por coorte de ingresso.  
+* **Justificativa:** a proporção de cada situação dentro da coorte é o que importa; colunas em ordem cronológica mostram a mudança entre turmas.
+
+**Consulta E8 (Momento da evasão):**
+
+* **Gráfico:** Colunas empilhadas por tipo de evasão, com o semestre do curso no eixo X.  
+* **Justificativa:** a altura mostra quando a evasão acontece e as cores mostram como (abandono, cancelamento, transferência), que pedem ações diferentes.
+
+**Consulta E9 (Evasão × reprovações):**
+
+* **Gráfico:** Colunas com a taxa de evasão por faixa de taxa de reprovação do aluno (com o n de cada faixa).  
+* **Justificativa:** uma escada crescente torna evidente a relação entre rendimento e evasão.
+
+**Consulta E10 (Evasão por naturalidade):**
+
+* **Gráfico:** Barras horizontais ordenadas, com a taxa geral como referência.  
+* **Justificativa:** muitas categorias com nomes longos; a barra de referência mostra quem está acima da média.
+
+**Consulta E11 (Alunos com sinais de risco):**
+
+* **Gráfico:** Tabela com destaque em vermelho para nota abaixo de 5, faltas acima de 25% e 4 ou mais reprovações.  
+* **Justificativa:** é uma lista de trabalho, não uma análise; a tabela permite ordenar, filtrar por curso e exportar.
+
+**Ajustes feitos na implementação no Metabase:**
+
+* **1.4:** barras horizontais ordenadas com a "MÉDIA GERAL" como referência, em vez de barras empilhadas 100%.  
+* **1.5.2:** os percentuais de Atrasado, Em risco e Acima do tempo máximo ficam empilhados por curso, que é a opção sugerida acima.  
+* **1.6:** dividida em dois gráficos, no lugar do Sankey. **1.6a:** barras horizontais com a taxa de evasão de cada característica e a "TAXA GERAL" como referência. **1.6b:** nota média e % de faltas até o semestre anterior à evasão, evadidos × demais, com recorte por característica nos filtros.  
+* **1.7:** barras empilhadas em 100% com as quatro situações por curso, no lugar do gráfico de progresso.  
+* **2.2:** barras horizontais empilhadas em 100% por departamento, no lugar da área empilhada, porque os departamentos não formam uma sequência contínua.  
+* **2.3:** dois gráficos de linha (aprovação e faltas) com o mesmo eixo X, no lugar do eixo duplo, porque cada um já se divide por turno ou modalidade.  
+* **2.4:** barras horizontais com as 10 disciplinas mais críticas, porque o Metabase não tem Treemap.  
+* **2.5:** combinado de barras (taxa de aprovação) e linha (amplitude média das notas), porque o Metabase não tem barras de erro.  
+* **1.3:** amostra fixa de até 1.500 pontos, porque pontos demais viram uma mancha.  
+* **Filtros:** todo o painel tem filtros por semestre, centro, campus, curso, turno, modalidade, grau, disciplina e perfil do aluno (coorte, ingresso, cota, renda, escola, gênero, raça, idade, deficiência, naturalidade e estado civil).
 
 ## **3\. Povoamento dos Esquemas com Dados Sintéticos (SQL)**
 

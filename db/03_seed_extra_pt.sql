@@ -159,7 +159,8 @@ base AS (
 ev AS (
     SELECT b.*,
            GREATEST(1, (b.ano_ing - 2023) * 2 + b.sem_ing) AS inicio,   -- 1 = 2023.1
-           (b.i % 9 = 0 OR (b.faixa = 'Baixa' AND b.i % 11 = 0)) AS evadiu
+           -- sorteio (e não i % 9): com a coorte em i % 12, o múltiplo comum concentraria a evasão em 1 de cada 3 coortes
+           (pseudo('ev' || b.i, 9) = 0 OR (b.faixa = 'Baixa' AND pseudo('eb' || b.i, 11) = 0)) AS evadiu
     FROM base b
 ),
 ev2 AS (
@@ -235,6 +236,10 @@ WITH matriculas AS (
            a.id_curso,
            a.faixaEconomica,
            a.assistenciaEstudantil,
+           -- quem vai evadir: 0 = não evade, 1 = semestres anteriores, 2 = último semestre antes da saída
+           CASE WHEN a.anoEvasao IS NULL THEN 0
+                WHEN p.p = (a.anoEvasao - 2023) * 2 + a.semestreEvasao - 1 THEN 2
+                ELSE 1 END                                       AS sinal_evasao,
            (a.id_aluno - 1001)                                   AS i,
            p.p                                                   AS periodo,
            k.k                                                   AS k,
@@ -259,10 +264,13 @@ com_turma AS (
                 THEN pseudo('zn' || m.i || m.periodo || m.k, 30) / 10.0           -- notas muito baixas (0 a 2,9)
                 ELSE LEAST(10, 4.2 + pseudo('n' || m.i || '-' || m.periodo || '-' || m.k, 100) * 0.058
                                + CASE m.faixaEconomica WHEN 'Alta' THEN 0.4 WHEN 'Média' THEN 0.2 ELSE 0 END
-                               + CASE WHEN m.assistenciaEstudantil THEN 0.3 ELSE 0 END)
+                               + CASE WHEN m.assistenciaEstudantil THEN 0.3 ELSE 0 END
+                               - CASE m.sinal_evasao WHEN 1 THEN 0.8 WHEN 2 THEN 2.0 ELSE 0 END)
            END AS nota,
            pseudo('f' || m.i || '-' || m.periodo || '-' || m.k, 13)
-             + CASE WHEN pseudo('s' || m.i || '-' || m.periodo || '-' || m.k, 19) = 0 THEN 18 ELSE 0 END AS faltas
+             + CASE WHEN pseudo('s' || m.i || '-' || m.periodo || '-' || m.k, 19) = 0 THEN 18 ELSE 0 END
+             -- sinais de alerta antes da evasão: mais faltas, sobretudo no último semestre cursado
+             + CASE m.sinal_evasao WHEN 1 THEN 3 WHEN 2 THEN 8 ELSE 0 END AS faltas
     FROM matriculas m
 ),
 com_codocencia AS (

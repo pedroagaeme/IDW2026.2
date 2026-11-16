@@ -96,6 +96,8 @@ FILTROS_CAMPO = [
     ("raca", "Raça/etnia", "aluno", "raca_etnia", "a", "string/="),
     ("faixa_etaria", "Faixa etária", "aluno", "faixaetaria", "a", "string/="),
     ("deficiencia", "Deficiência", "aluno", "deficiencia", "a", "string/="),
+    ("naturalidade", "Naturalidade", "aluno", "naturalidade", "a", "string/="),
+    ("estado_civil", "Estado civil", "aluno", "estadocivil", "a", "string/="),
 ]
 # Opções de um filtro limitadas pelas de outro (ex.: só os departamentos do centro escolhido)
 FILTROS_LIGADOS = {"departamento": ["centro", "campus"], "campus": ["centro"]}
@@ -112,16 +114,18 @@ SEPARAR = {"separar_por": ("Separar por", "Turno", "f_separar")}
 # n = semestres decorridos desde o ingresso; ritmo regular = cargaHorariaTotal ÷ tempoMinimoConcluir por semestre.
 SITUACAO = """with ref as (select ano, semestre from data order by ano desc, semestre desc limit 1),
 alunos as (
-    select c.departamento as curso, a.cargahorariaintegralizadaatual as ch, c.cargahorariatotal as total,
+    select c.departamento as curso, ta.anosemestreingresso as coorte, a.tipoevasao is not null as evadiu,
+           a.cargahorariaintegralizadaatual as ch, c.cargahorariatotal as total,
            c.tempominimoconcluir as tmin, c.tempomaximoconcluir as tmax,
            (r.ano - ta.anoingresso) * 2 + (r.semestre - ta.semestreingresso) + 1 as n
     from {de}
     cross join ref r
-    where a.tipoevasao is null and c.cargahorariatotal is not null
+    where c.cargahorariatotal is not null
 {filtros}
 ),
 situacao as (
-    select curso, case
+    select curso, coorte, case
+        when evadiu then 'Evadido'
         when n > tmax then 'Acima do tempo máximo'
         when (total - ch) / (total * 1.0 / tmin) > tmax - n then 'Em risco de ultrapassar o tempo máximo'
         when ch < total * least(n, tmin) * 1.0 / tmin then 'Atrasado'
@@ -134,7 +138,7 @@ SITUACAO_NOTAS = """-- Alunos ativos no último semestre. Acima do tempo máximo
 """
 CORES_SITUACAO = {"dentro": ("Dentro do fluxo", VERDE), "atrasado": ("Atrasado", AMARELO),
                   "em_risco": ("Em risco de ultrapassar o tempo máximo", LARANJA),
-                  "acima": ("Acima do tempo máximo", VERMELHO)}
+                  "acima": ("Acima do tempo máximo", VERMELHO), "evadido": ("Evadido", CINZA)}
 
 
 def series_situacao(*chaves):
@@ -144,6 +148,276 @@ def series_situacao(*chaves):
 def colunas_situacao(*chaves):
     return ",\n".join(f"       round(100.0 * count(*) filter (where situacao = '{CORES_SITUACAO[k][0]}') / count(*), 1)"
                        f" as {k}" for k in chaves)
+
+
+# Taxa de evasão no período (TEA), método escolhido na proposta de DW (eq. 4.7 a 4.10), por curso e semestre:
+# TEA = evadidos no semestre ÷ matrículas no semestre (quem cursou o semestre + quem evadiu nele, já que o
+# evadido não tem registro na fato no semestre da saída). k = ano * 2 + semestre ordena os semestres.
+TEA = """with base as (
+    select distinct a.id_aluno, c.departamento as curso, dt.ano * 2 + dt.semestre as k,
+           a.anoevasao * 2 + a.semestreevasao as k_ev
+    from {de}
+    where true
+{filtros}
+),
+mat as (select curso, k, count(distinct id_aluno) as m from base group by 1, 2),
+ev as (select curso, k_ev as k, count(distinct id_aluno) as e from base where k_ev is not null group by 1, 2),
+tea as (
+    select mat.curso, mat.k, (mat.k - 1) / 2 as ano, (mat.k - 1) % 2 + 1 as semestre,
+           coalesce(ev.e, 0) as evadidos, mat.m + coalesce(ev.e, 0) as matriculas
+    from mat left join ev on ev.curso = mat.curso and ev.k = mat.k
+)"""
+# A fato começa em 2023.1, então a primeira evasão registrada é em 2023.2.
+# ponytail: semestres fixos nas colunas do mapa de calor; gerar dinamicamente se a dimensão Data crescer.
+SEMESTRES_EVASAO = [(2023, 2), (2024, 1), (2024, 2), (2025, 1), (2025, 2)]
+NAO_TEMPORAIS = ["semestre", "disciplina", "tipo_disciplina"]  # filtros que distorcem séries e taxas por aluno
+KPI = {"largura": 6, "altura": 3}
+VERMELHO_FORTE = "#ED6E6E"
+
+ESTRATEGICAS = [
+    dict(
+        nome="E1 Alunos ativos",
+        tipo="scalar",
+        config={},
+        base="aluno",
+        sql="""-- Alunos com vínculo ativo (sem registro de evasão).
+select count(*) as ativos
+from {de}
+where a.tipoevasao is null
+{filtros}""",
+        **KPI,
+    ),
+    dict(
+        nome="E2 Taxa de evasão no último semestre (TEA)",
+        tipo="smartscalar",
+        config={"scalar.comparisons": [{"id": "anterior", "type": "previousValue"}],
+                "scalar.switch_positive_negative": True, "column_settings": sufixo("tea")},
+        base="fato_aluno",
+        ignora=NAO_TEMPORAIS,
+        sql="""-- Evadidos ÷ matrículas do semestre (método da proposta, eq. 4.10), comparado ao semestre anterior.
+""" + TEA + """
+select make_date(ano, semestre * 6 - 5, 1) as semestre, round(100.0 * sum(evadidos) / sum(matriculas), 1) as tea
+from tea
+where k > (select min(k) from tea)  -- o 1º semestre da fato ainda não tem evasão registrada
+group by 1
+order by 1""",
+        **KPI,
+    ),
+    dict(
+        nome="E3 Aprovação no último semestre",
+        tipo="smartscalar",
+        config={"scalar.comparisons": [{"id": "anterior", "type": "previousValue"}],
+                "column_settings": sufixo("aprovacao")},
+        base="fato_aluno",
+        ignora=["semestre"],
+        sql="""-- Matrículas aprovadas ÷ matrículas (sem trancados), comparado ao semestre anterior.
+select make_date(dt.ano, dt.semestre * 6 - 5, 1) as semestre,
+       round(100.0 * count(*) filter (where f.statusaluno = 'Aprovado') / count(*), 1) as aprovacao
+from {de}
+where not f.periodotrancado
+{filtros}
+group by 1
+order by 1""",
+        **KPI,
+    ),
+    dict(
+        nome="E4 Alunos ativos retidos",
+        tipo="scalar",
+        config={"column_settings": sufixo("retidos")},
+        base="aluno_coorte",
+        sql="""-- Atrasados + em risco + acima do tempo máximo ÷ alunos ativos (mesma regra das consultas 1.5.2 e 1.7).
+""" + SITUACAO + """
+select round(100.0 * count(*) filter (where situacao not in ('Dentro do fluxo', 'Evadido'))
+             / nullif(count(*) filter (where situacao <> 'Evadido'), 0), 1) as retidos
+from situacao""",
+        **KPI,
+    ),
+    dict(
+        nome="E5 Evolução da taxa de evasão (TEA) por semestre",
+        tipo="combo",
+        config={"graph.dimensions": ["semestre"], "graph.metrics": ["tea", "evadidos"], "graph.show_values": True,
+                "column_settings": sufixo("tea"),
+                "series_settings": {"tea": {"display": "line", "color": VERMELHO, "axis": "left",
+                                            "title": "Taxa de evasão no semestre (%)"},
+                                    "evadidos": {"display": "bar", "color": CINZA, "axis": "right",
+                                                 "title": "Evadidos no semestre"}}},
+        base="fato_aluno",
+        ignora=NAO_TEMPORAIS,
+        sql="""-- Série histórica da TEA (proposta, eq. 4.10): queda indica efeito das ações de permanência.
+-- Linha = taxa; barras = número de evadidos. Recorte por curso, centro ou perfil nos filtros.
+""" + TEA + """
+select ano || '.' || semestre as semestre, sum(evadidos) as evadidos,
+       round(100.0 * sum(evadidos) / sum(matriculas), 1) as tea
+from tea
+where k > (select min(k) from tea)
+group by k, ano, semestre
+order by k""",
+        altura=8,
+    ),
+    dict(
+        nome="E6 Mapa de calor da evasão por curso e semestre (%)",
+        tipo="table",
+        config={"table.column_formatting": [{
+                    "id": 0, "type": "range", "columns": [f"{a}.{s}" for a, s in SEMESTRES_EVASAO] + ["Período"],
+                    "colors": ["#FFFFFF", VERMELHO_FORTE], "min_type": None, "max_type": None}],
+                "column_settings": sufixo(*[f"{a}.{s}" for a, s in SEMESTRES_EVASAO], "Período")},
+        base="fato_aluno",
+        ignora=NAO_TEMPORAIS,
+        sql="""-- TEA de cada curso em cada semestre; quanto mais vermelho, maior a evasão. "Período" = todos os semestres.
+""" + TEA + """
+select curso,
+""" + chr(10).join(f'       round(100.0 * sum(evadidos) filter (where k = {a * 2 + s})'
+                    f' / nullif(sum(matriculas) filter (where k = {a * 2 + s}), 0), 1) as "{a}.{s}",'
+                    for a, s in SEMESTRES_EVASAO) + """
+       round(100.0 * sum(evadidos) / sum(matriculas), 1) as "Período"
+from tea
+group by curso
+order by "Período" desc""",
+        altura=8,
+    ),
+    dict(
+        nome="E7 Situação de cada coorte de ingresso (%)",
+        tipo="bar",
+        config={"graph.dimensions": ["coorte"], "graph.metrics": ["dentro", "atrasado", "em_risco", "acima", "evadido"],
+                "stackable.stack_type": "normalized", "graph.show_values": False,
+                "series_settings": series_situacao("dentro", "atrasado", "em_risco", "acima", "evadido")},
+        base="aluno_coorte",
+        sql="""-- Onde está hoje cada turma de ingresso: no fluxo, retida (atrasada, em risco, acima do tempo máximo) ou evadida.
+-- Análise por coorte, o "grupo 2" de métodos da proposta.
+""" + SITUACAO + """
+select coorte,
+""" + colunas_situacao("dentro", "atrasado", "em_risco", "acima", "evadido") + """
+from situacao
+group by coorte
+order by coorte""",
+        altura=9,
+    ),
+    dict(
+        nome="E8 Em que semestre do curso os alunos evadem",
+        tipo="bar",
+        config={"graph.dimensions": ["semestre_do_curso", "tipo"], "graph.metrics": ["evadidos"],
+                "stackable.stack_type": "stacked", "graph.show_values": False, "graph.x_axis.scale": "ordinal",
+                "graph.x_axis.title_text": "Semestre do curso em que saiu", "graph.y_axis.title_text": "Evadidos",
+                "series_settings": cores(**{"Abandono": VERMELHO, "Cancelamento": LARANJA, "Transferência": AZUL})},
+        base="aluno_coorte",
+        sql="""-- "Período letivo da evasão" (Tabela 6 da proposta), por tipo de saída.
+-- Só coortes acompanhadas desde o ingresso (2023.1 em diante): as anteriores não têm os primeiros semestres nos dados.
+select (a.anoevasao - ta.anoingresso) * 2 + (a.semestreevasao - ta.semestreingresso) + 1 as semestre_do_curso,
+       a.tipoevasao as tipo,
+       count(*) as evadidos
+from {de}
+where a.tipoevasao is not null
+  and ta.anoingresso >= 2023
+{filtros}
+group by 1, 2
+order by 1, 2""",
+        altura=9,
+    ),
+    dict(
+        nome="E9 Evasão conforme a taxa de reprovação do aluno (%)",
+        tipo="bar",
+        config={"graph.dimensions": ["reprovacoes"], "graph.metrics": ["pct_evasao"], "graph.show_values": True,
+                "graph.x_axis.title_text": "Disciplinas reprovadas (% das cursadas)", "graph.y_axis.title_text": "% de alunos evadidos",
+                "column_settings": sufixo("pct_evasao"), "series_settings": cores(pct_evasao=VERMELHO)},
+        base="fato_aluno",
+        ignora=NAO_TEMPORAIS,
+        sql="""-- Rendimento como sinal de alerta: quanto mais reprovações, maior a evasão? (reprovações desde 2023.1)
+-- Taxa de reprovação do aluno (reprovações ÷ disciplinas cursadas, sem trancados): usar a contagem bruta
+-- favoreceria quem evadiu cedo, que cursou menos disciplinas e teve menos chance de reprovar.
+with por_aluno as (
+    select a.id_aluno, a.tipoevasao is not null as evadiu,
+           100.0 * count(*) filter (where f.statusaluno like 'Reprovado%') / count(*) as pct_rep
+    from {de}
+    where not f.periodotrancado
+{filtros}
+    group by 1, 2
+),
+faixas as (
+    select evadiu, pct_rep,
+           case when pct_rep = 0 then 'Nenhuma' when pct_rep <= 20 then 'Até 20%'
+                when pct_rep <= 40 then '20% a 40%' else 'Acima de 40%' end as faixa
+    from por_aluno
+)
+select faixa || ' (n=' || count(*) || ')' as reprovacoes,
+       round(100.0 * count(*) filter (where evadiu) / count(*), 1) as pct_evasao
+from faixas
+group by faixa
+order by min(pct_rep)""",
+        altura=8,
+    ),
+    dict(
+        nome="E10 Evasão por naturalidade (%)",
+        tipo="row",
+        config={"graph.dimensions": ["grupo"], "graph.metrics": ["pct_evasao"], "graph.show_values": True,
+                "graph.y_axis.title_text": "% de alunos evadidos", "column_settings": sufixo("pct_evasao")},
+        base="aluno",
+        sql="""-- A proposta usa a naturalidade no lugar do endereço atual (que muda e pode ser uma república).
+-- "TAXA GERAL" é a referência.
+with base as (
+    select a.naturalidade, a.tipoevasao is not null as evadiu
+    from {de}
+    where true
+{filtros}
+)
+select nome || ' (n=' || n || ')' as grupo, pct_evasao from (
+    select 0 as ordem, 'TAXA GERAL' as nome, count(*) as n,
+           round(100.0 * count(*) filter (where evadiu) / count(*), 1) as pct_evasao
+    from base
+    union all
+    select 1, naturalidade, count(*), round(100.0 * count(*) filter (where evadiu) / count(*), 1)
+    from base group by naturalidade
+) t
+order by ordem, pct_evasao desc""",
+        altura=8,
+    ),
+    dict(
+        nome="E11 Alunos ativos com sinais de risco de evasão",
+        tipo="table",
+        config={"table.column_formatting": [
+            {"id": 0, "type": "single", "operator": "<", "value": 5, "color": VERMELHO_FORTE,
+             "columns": ["Nota média no último semestre"], "highlight_row": False},
+            {"id": 1, "type": "single", "operator": ">", "value": 25, "color": VERMELHO_FORTE,
+             "columns": ["% de faltas no último semestre"], "highlight_row": False},
+            {"id": 2, "type": "single", "operator": ">=", "value": 4, "color": VERMELHO_FORTE,
+             "columns": ["Reprovações"], "highlight_row": False}]},
+        base="aluno_coorte",
+        largura=24,
+        sql="""-- Lista para a coordenação agir: alunos ativos que trancaram o último semestre, tiveram nota média
+-- abaixo de 5 ou mais de 25% de faltas nele, ou acumulam 4 ou mais reprovações. Os 300 mais críticos.
+with ref as (select id_data from data order by ano desc, semestre desc limit 1),
+ult as (
+    select f.id_aluno, avg(f.medianota) as nota, avg(100.0 * f.qtdfaltas / d.cargahoraria) as faltas
+    from fatorendimentoaluno f
+    join disciplina d on d.id_disciplina = f.id_disciplina
+    join ref on ref.id_data = f.id_data
+    where not f.periodotrancado
+    group by 1
+),
+rep as (
+    select id_aluno, count(*) filter (where statusaluno like 'Reprovado%') as reprovacoes
+    from fatorendimentoaluno group by 1
+)
+select a.nome as "Aluno", a.numeromatricula as "Matrícula", c.departamento as "Curso",
+       ta.anosemestreingresso as "Coorte",
+       round(100.0 * a.cargahorariaintegralizadaatual / c.cargahorariatotal) as "% integralizado",
+       round(u.nota, 1) as "Nota média no último semestre",
+       round(u.faltas, 1) as "% de faltas no último semestre",
+       coalesce(rep.reprovacoes, 0) as "Reprovações",
+       concat_ws(', ', case when u.id_aluno is null then 'trancou o último semestre' end,
+                       case when u.nota < 5 then 'nota baixa' end,
+                       case when u.faltas > 25 then 'muitas faltas' end,
+                       case when coalesce(rep.reprovacoes, 0) >= 4 then 'muitas reprovações' end) as "Sinais"
+from {de}
+left join ult u on u.id_aluno = a.id_aluno
+left join rep on rep.id_aluno = a.id_aluno
+where a.tipoevasao is null
+  and (u.id_aluno is null or u.nota < 5 or u.faltas > 25 or coalesce(rep.reprovacoes, 0) >= 4)
+{filtros}
+order by u.nota nulls first, rep.reprovacoes desc
+limit 300""",
+        altura=12,
+    ),
+]
 
 
 # Cada pergunta: número no documento + nome, tipo de gráfico, configurações, base, SQL, variáveis de texto
@@ -241,6 +515,7 @@ where not f.periodotrancado
 order by md5(f.id_fatoaluno::text)
 limit 1500""",
         variaveis=FOCO,
+        ignora=["disciplina"],
         altura=9,
     ),
     dict(
@@ -304,18 +579,19 @@ order by count(*) filter (where f.statusaluno like 'Reprovado%') * 1.0 / count(*
 select curso || ' (n=' || count(*) || ')' as curso,
 """ + colunas_situacao("atrasado", "em_risco", "acima") + """
 from situacao
+where situacao <> 'Evadido'
 group by curso
 order by count(*) filter (where situacao <> 'Dentro do fluxo') * 1.0 / count(*) desc""",
         altura=9,
     ),
     dict(
-        nome="1.6 Evasão por faixa econômica, raça/etnia e deficiência (%)",
+        nome="1.6a Evasão por faixa econômica, raça/etnia e deficiência (%)",
         tipo="row",
         config={"graph.dimensions": ["grupo"], "graph.metrics": ["pct_evasao"], "graph.show_values": True,
                 "graph.y_axis.title_text": "% de alunos evadidos", "column_settings": sufixo("pct_evasao")},
         base="aluno",
         sql="""-- Cada característica analisada separadamente; "TAXA GERAL" é a referência.
--- Evadidos e não evadidos têm faltas e notas quase iguais nestes dados, por isso barras em vez de Sankey.
+-- Barras em vez de Sankey: comparar a taxa de cada grupo com a geral fica mais direto. Notas e faltas: gráfico 1.6b.
 with base as (
     select a.tipoevasao is not null as evadiu, a.faixaeconomica, a.raca_etnia, a.deficiencia
     from {de}
@@ -342,6 +618,29 @@ order by ordem, sub, 100.0 * ev / n desc""",
         altura=9,
     ),
     dict(
+        nome="1.6b Nota e faltas até o semestre anterior à evasão: evadidos × demais",
+        tipo="combo",
+        config={"graph.dimensions": ["grupo"], "graph.metrics": ["media_nota", "pct_faltas"],
+                "graph.show_values": True, "column_settings": sufixo("pct_faltas"),
+                "series_settings": {"media_nota": {"display": "bar", "color": AZUL, "axis": "left",
+                                                   "title": "Nota média (0 a 10)"},
+                                    "pct_faltas": {"display": "bar", "color": VERMELHO, "axis": "right",
+                                                   "title": "% de faltas"}}},
+        base="fato_aluno",
+        sql="""-- Segunda parte da consulta 1.6: a fato não tem o semestre da saída, então o histórico do evadido vai até
+-- o semestre anterior à evasão. Recorte por faixa econômica, raça/etnia ou deficiência nos filtros.
+select case when a.tipoevasao is null then 'Não evadidos' else 'Evadidos' end
+         || ' (n=' || count(distinct a.id_aluno) || ')' as grupo,
+       round(avg(f.medianota), 2) as media_nota,
+       round(avg(100.0 * f.qtdfaltas / d.cargahoraria), 1) as pct_faltas
+from {de}
+where not f.periodotrancado
+{filtros}
+group by a.tipoevasao is null
+order by a.tipoevasao is null""",
+        altura=9,
+    ),
+    dict(
         nome="1.7 Situação de integralização dos alunos ativos por curso (%)",
         tipo="row",
         config={"graph.dimensions": ["curso"], "graph.metrics": ["dentro", "atrasado", "em_risco", "acima"],
@@ -352,6 +651,7 @@ order by ordem, sub, 100.0 * ev / n desc""",
 select curso || ' (n=' || count(*) || ')' as curso,
 """ + colunas_situacao("dentro", "atrasado", "em_risco", "acima") + """
 from situacao
+where situacao <> 'Evadido'
 group by curso
 order by curso""",
         altura=9,
@@ -384,6 +684,7 @@ select professor, aprovados, reprovados_nota, reprovados_falta from (
 order by ordem, (reprovados_nota + reprovados_falta) * 1.0
                 / nullif(aprovados + reprovados_nota + reprovados_falta, 0) desc""",
         variaveis=FOCO,
+        ignora=["disciplina"],
         altura=9,
     ),
     dict(
@@ -551,12 +852,15 @@ order by 1, 2""",
         altura=8,
     ),
 ]
+PERGUNTAS = ESTRATEGICAS + PERGUNTAS
 
-# Abas do dashboard, uma por esquema do documento: (prefixo do número da pergunta, título)
-ABAS = [("1.", "Esquema 1 – Rendimento do aluno"), ("2.", "Esquema 2 – Rendimento da disciplina")]
+# Abas do dashboard: (prefixo do número da pergunta, título)
+ABAS = [("E", "Visão estratégica"), ("1.", "Esquema 1 – Rendimento do aluno"),
+        ("2.", "Esquema 2 – Rendimento da disciplina")]
 
 TIPOS = {"row": "barras horizontais", "bar": "barras", "line": "linhas", "scatter": "dispersão",
-         "area": "área empilhada", "combo": "barras + linha"}
+         "area": "área empilhada", "combo": "barras + linha", "scalar": "número", "smartscalar": "número com tendência",
+         "table": "tabela"}
 
 
 def numero(p):
@@ -568,11 +872,10 @@ def titulo(p):
 
 
 def filtros_da(p):
-    """Filtros de campo que se aplicam à pergunta: os que usam tabelas presentes na base dela.
-    Perguntas da "Disciplina em foco" ignoram o filtro "Disciplinas" (os dois juntos podem não se cruzar)."""
+    """Filtros de campo que se aplicam à pergunta: os que usam tabelas presentes na base dela,
+    menos os que ela ignora (ex.: "Disciplinas" nas perguntas da "Disciplina em foco", que podem não se cruzar)."""
     apelidos = BASES[p["base"]][1]
-    return [f for f in FILTROS_CAMPO
-            if f[4] in apelidos and not (f[0] == "disciplina" and "foco" in p.get("variaveis", {}))]
+    return [f for f in FILTROS_CAMPO if f[4] in apelidos and f[0] not in p.get("ignora", [])]
 
 
 def sql_final(p):
@@ -650,18 +953,28 @@ def variaveis_da_pergunta(pergunta, campos):
 
 
 def layout(perguntas_ids):
-    """Uma aba por esquema; em cada aba, duas colunas de 12 (a linha usa a altura do maior cartão do par)."""
+    """Grade de 24 colunas por aba: cartões lado a lado (largura padrão 12) até encher a linha, que usa a altura
+    do maior cartão; um cartão de largura padrão sozinho na linha ocupa a largura toda."""
     cartoes = []
     for n_aba, (prefixo, _titulo) in enumerate(ABAS, start=1):
-        da_aba = [x for x in perguntas_ids if x[0]["nome"].startswith(prefixo)]
-        linha = 0
-        for i in range(0, len(da_aba), 2):
-            par = da_aba[i:i + 2]
-            altura = max(p["altura"] for p, _ in par)
-            for j, (pergunta, card_id) in enumerate(par):
-                cartoes.append({"pergunta": pergunta, "card_id": card_id, "aba": -n_aba, "row": linha,
-                                "col": j * 12, "size_x": 12 if len(par) == 2 else 24, "size_y": altura})
-            linha += altura
+        linhas, atual = [], []
+        for pergunta, card_id in perguntas_ids:
+            if not pergunta["nome"].startswith(prefixo):
+                continue
+            if sum(p.get("largura", 12) for p, _ in atual) + pergunta.get("largura", 12) > 24:
+                linhas.append(atual)
+                atual = []
+            atual.append((pergunta, card_id))
+        linhas.append(atual)
+        topo = 0
+        for linha in linhas:
+            col = 0
+            for pergunta, card_id in linha:
+                largura = 24 if len(linha) == 1 and "largura" not in pergunta else pergunta.get("largura", 12)
+                cartoes.append({"pergunta": pergunta, "card_id": card_id, "aba": -n_aba, "row": topo,
+                                "col": col, "size_x": largura, "size_y": pergunta["altura"]})
+                col += largura
+            topo += max(p["altura"] for p, _ in linha)
     return cartoes
 
 

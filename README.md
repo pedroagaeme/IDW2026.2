@@ -14,8 +14,14 @@ docker compose up -d
 - Metabase: http://localhost:3000
 
 A primeira inicialização leva alguns minutos. O serviço `metabase-setup` espera o Metabase subir e configura tudo
-sozinho: cria o admin de demonstração, conecta o banco `idw` e importa as 18 perguntas do documento
-"Consultas em Linguagem Natural" (todas as consultas) e o dashboard, em duas abas (uma por esquema).
+sozinho: cria o admin de demonstração, conecta o banco `idw` e importa as 30 perguntas do documento
+"Consultas em Linguagem Natural" e o dashboard, em três abas:
+
+- **Visão estratégica:** KPIs (alunos ativos, taxa de evasão e aprovação do último semestre com tendência, % retidos),
+  série histórica da taxa de evasão no período (TEA, método da proposta de DW em `docs/proposta`), mapa de calor da
+  evasão por curso e semestre, situação de cada coorte, momento da evasão, evasão × reprovação, evasão por
+  naturalidade e a lista de alunos ativos com sinais de risco.
+- **Esquema 1 – Rendimento do aluno** e **Esquema 2 – Rendimento da disciplina:** as consultas 1.x e 2.x do documento.
 
 **Filtros do dashboard** (vários valores por filtro; as opções vêm do próprio banco; cada aba mostra só os que
 valem para os seus gráficos):
@@ -23,8 +29,8 @@ valem para os seus gráficos):
 - Recorte institucional: semestre, centro, campus, curso/departamento (opções limitadas pelo centro e campus
   escolhidos), turno do curso, modalidade de ensino e grau.
 - Disciplina: tipo (obrigatória/optativa/eletiva) e códigos das disciplinas.
-- Perfil do aluno (aba do Esquema 1): coorte de ingresso, forma de ingresso, tipo de cota, faixa econômica,
-  escola do ensino médio, gênero, raça/etnia, faixa etária e deficiência.
+- Perfil do aluno: coorte de ingresso, forma de ingresso, tipo de cota, faixa econômica, escola do ensino médio,
+  gênero, raça/etnia, faixa etária, deficiência, naturalidade e estado civil.
 - Específicos: "Disciplina em foco" (dispersão nota × frequência e comparação de professores) e
   "Separar evolução por" (turno ou modalidade nas séries temporais).
 Acompanhe com `docker compose logs -f metabase-setup`; ao final ele mostra o link do dashboard.

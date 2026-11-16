@@ -3,6 +3,274 @@
 -- Sem os filtros do dashboard; variáveis obrigatórias no valor padrão.
 -- Em PostgreSQL, os nomes sem aspas ficam em minúsculas (ex.: FatoRendimentoAluno -> fatorendimentoaluno).
 
+-- E1 Alunos ativos  [número]
+-- Alunos com vínculo ativo (sem registro de evasão).
+select count(*) as ativos
+from aluno a
+    join curso c on c.id_curso = a.id_curso
+where a.tipoevasao is null;
+
+-- E2 Taxa de evasão no último semestre (TEA)  [número com tendência]
+-- Evadidos ÷ matrículas do semestre (método da proposta, eq. 4.10), comparado ao semestre anterior.
+with base as (
+    select distinct a.id_aluno, c.departamento as curso, dt.ano * 2 + dt.semestre as k,
+           a.anoevasao * 2 + a.semestreevasao as k_ev
+    from fatorendimentoaluno f
+    join aluno a on a.id_aluno = f.id_aluno
+    join curso c on c.id_curso = f.id_curso
+    join data dt on dt.id_data = f.id_data
+    join disciplina d on d.id_disciplina = f.id_disciplina
+    join turmaaluno ta on ta.id_turmaaluno = f.id_turmaaluno
+    where true
+),
+mat as (select curso, k, count(distinct id_aluno) as m from base group by 1, 2),
+ev as (select curso, k_ev as k, count(distinct id_aluno) as e from base where k_ev is not null group by 1, 2),
+tea as (
+    select mat.curso, mat.k, (mat.k - 1) / 2 as ano, (mat.k - 1) % 2 + 1 as semestre,
+           coalesce(ev.e, 0) as evadidos, mat.m + coalesce(ev.e, 0) as matriculas
+    from mat left join ev on ev.curso = mat.curso and ev.k = mat.k
+)
+select make_date(ano, semestre * 6 - 5, 1) as semestre, round(100.0 * sum(evadidos) / sum(matriculas), 1) as tea
+from tea
+where k > (select min(k) from tea)  -- o 1º semestre da fato ainda não tem evasão registrada
+group by 1
+order by 1;
+
+-- E3 Aprovação no último semestre  [número com tendência]
+-- Matrículas aprovadas ÷ matrículas (sem trancados), comparado ao semestre anterior.
+select make_date(dt.ano, dt.semestre * 6 - 5, 1) as semestre,
+       round(100.0 * count(*) filter (where f.statusaluno = 'Aprovado') / count(*), 1) as aprovacao
+from fatorendimentoaluno f
+    join aluno a on a.id_aluno = f.id_aluno
+    join curso c on c.id_curso = f.id_curso
+    join data dt on dt.id_data = f.id_data
+    join disciplina d on d.id_disciplina = f.id_disciplina
+    join turmaaluno ta on ta.id_turmaaluno = f.id_turmaaluno
+where not f.periodotrancado
+group by 1
+order by 1;
+
+-- E4 Alunos ativos retidos  [número]
+-- Atrasados + em risco + acima do tempo máximo ÷ alunos ativos (mesma regra das consultas 1.5.2 e 1.7).
+with ref as (select ano, semestre from data order by ano desc, semestre desc limit 1),
+alunos as (
+    select c.departamento as curso, ta.anosemestreingresso as coorte, a.tipoevasao is not null as evadiu,
+           a.cargahorariaintegralizadaatual as ch, c.cargahorariatotal as total,
+           c.tempominimoconcluir as tmin, c.tempomaximoconcluir as tmax,
+           (r.ano - ta.anoingresso) * 2 + (r.semestre - ta.semestreingresso) + 1 as n
+    from aluno a
+    join curso c on c.id_curso = a.id_curso
+    join (select distinct id_aluno, id_turmaaluno from fatorendimentoaluno) fa on fa.id_aluno = a.id_aluno
+    join turmaaluno ta on ta.id_turmaaluno = fa.id_turmaaluno
+    cross join ref r
+    where c.cargahorariatotal is not null
+),
+situacao as (
+    select curso, coorte, case
+        when evadiu then 'Evadido'
+        when n > tmax then 'Acima do tempo máximo'
+        when (total - ch) / (total * 1.0 / tmin) > tmax - n then 'Em risco de ultrapassar o tempo máximo'
+        when ch < total * least(n, tmin) * 1.0 / tmin then 'Atrasado'
+        else 'Dentro do fluxo' end as situacao
+    from alunos
+)
+select round(100.0 * count(*) filter (where situacao not in ('Dentro do fluxo', 'Evadido'))
+             / nullif(count(*) filter (where situacao <> 'Evadido'), 0), 1) as retidos
+from situacao;
+
+-- E5 Evolução da taxa de evasão (TEA) por semestre  [barras + linha]
+-- Série histórica da TEA (proposta, eq. 4.10): queda indica efeito das ações de permanência.
+-- Linha = taxa; barras = número de evadidos. Recorte por curso, centro ou perfil nos filtros.
+with base as (
+    select distinct a.id_aluno, c.departamento as curso, dt.ano * 2 + dt.semestre as k,
+           a.anoevasao * 2 + a.semestreevasao as k_ev
+    from fatorendimentoaluno f
+    join aluno a on a.id_aluno = f.id_aluno
+    join curso c on c.id_curso = f.id_curso
+    join data dt on dt.id_data = f.id_data
+    join disciplina d on d.id_disciplina = f.id_disciplina
+    join turmaaluno ta on ta.id_turmaaluno = f.id_turmaaluno
+    where true
+),
+mat as (select curso, k, count(distinct id_aluno) as m from base group by 1, 2),
+ev as (select curso, k_ev as k, count(distinct id_aluno) as e from base where k_ev is not null group by 1, 2),
+tea as (
+    select mat.curso, mat.k, (mat.k - 1) / 2 as ano, (mat.k - 1) % 2 + 1 as semestre,
+           coalesce(ev.e, 0) as evadidos, mat.m + coalesce(ev.e, 0) as matriculas
+    from mat left join ev on ev.curso = mat.curso and ev.k = mat.k
+)
+select ano || '.' || semestre as semestre, sum(evadidos) as evadidos,
+       round(100.0 * sum(evadidos) / sum(matriculas), 1) as tea
+from tea
+where k > (select min(k) from tea)
+group by k, ano, semestre
+order by k;
+
+-- E6 Mapa de calor da evasão por curso e semestre (%)  [tabela]
+-- TEA de cada curso em cada semestre; quanto mais vermelho, maior a evasão. "Período" = todos os semestres.
+with base as (
+    select distinct a.id_aluno, c.departamento as curso, dt.ano * 2 + dt.semestre as k,
+           a.anoevasao * 2 + a.semestreevasao as k_ev
+    from fatorendimentoaluno f
+    join aluno a on a.id_aluno = f.id_aluno
+    join curso c on c.id_curso = f.id_curso
+    join data dt on dt.id_data = f.id_data
+    join disciplina d on d.id_disciplina = f.id_disciplina
+    join turmaaluno ta on ta.id_turmaaluno = f.id_turmaaluno
+    where true
+),
+mat as (select curso, k, count(distinct id_aluno) as m from base group by 1, 2),
+ev as (select curso, k_ev as k, count(distinct id_aluno) as e from base where k_ev is not null group by 1, 2),
+tea as (
+    select mat.curso, mat.k, (mat.k - 1) / 2 as ano, (mat.k - 1) % 2 + 1 as semestre,
+           coalesce(ev.e, 0) as evadidos, mat.m + coalesce(ev.e, 0) as matriculas
+    from mat left join ev on ev.curso = mat.curso and ev.k = mat.k
+)
+select curso,
+       round(100.0 * sum(evadidos) filter (where k = 4048) / nullif(sum(matriculas) filter (where k = 4048), 0), 1) as "2023.2",
+       round(100.0 * sum(evadidos) filter (where k = 4049) / nullif(sum(matriculas) filter (where k = 4049), 0), 1) as "2024.1",
+       round(100.0 * sum(evadidos) filter (where k = 4050) / nullif(sum(matriculas) filter (where k = 4050), 0), 1) as "2024.2",
+       round(100.0 * sum(evadidos) filter (where k = 4051) / nullif(sum(matriculas) filter (where k = 4051), 0), 1) as "2025.1",
+       round(100.0 * sum(evadidos) filter (where k = 4052) / nullif(sum(matriculas) filter (where k = 4052), 0), 1) as "2025.2",
+       round(100.0 * sum(evadidos) / sum(matriculas), 1) as "Período"
+from tea
+group by curso
+order by "Período" desc;
+
+-- E7 Situação de cada coorte de ingresso (%)  [barras]
+-- Onde está hoje cada turma de ingresso: no fluxo, retida (atrasada, em risco, acima do tempo máximo) ou evadida.
+-- Análise por coorte, o "grupo 2" de métodos da proposta.
+with ref as (select ano, semestre from data order by ano desc, semestre desc limit 1),
+alunos as (
+    select c.departamento as curso, ta.anosemestreingresso as coorte, a.tipoevasao is not null as evadiu,
+           a.cargahorariaintegralizadaatual as ch, c.cargahorariatotal as total,
+           c.tempominimoconcluir as tmin, c.tempomaximoconcluir as tmax,
+           (r.ano - ta.anoingresso) * 2 + (r.semestre - ta.semestreingresso) + 1 as n
+    from aluno a
+    join curso c on c.id_curso = a.id_curso
+    join (select distinct id_aluno, id_turmaaluno from fatorendimentoaluno) fa on fa.id_aluno = a.id_aluno
+    join turmaaluno ta on ta.id_turmaaluno = fa.id_turmaaluno
+    cross join ref r
+    where c.cargahorariatotal is not null
+),
+situacao as (
+    select curso, coorte, case
+        when evadiu then 'Evadido'
+        when n > tmax then 'Acima do tempo máximo'
+        when (total - ch) / (total * 1.0 / tmin) > tmax - n then 'Em risco de ultrapassar o tempo máximo'
+        when ch < total * least(n, tmin) * 1.0 / tmin then 'Atrasado'
+        else 'Dentro do fluxo' end as situacao
+    from alunos
+)
+select coorte,
+       round(100.0 * count(*) filter (where situacao = 'Dentro do fluxo') / count(*), 1) as dentro,
+       round(100.0 * count(*) filter (where situacao = 'Atrasado') / count(*), 1) as atrasado,
+       round(100.0 * count(*) filter (where situacao = 'Em risco de ultrapassar o tempo máximo') / count(*), 1) as em_risco,
+       round(100.0 * count(*) filter (where situacao = 'Acima do tempo máximo') / count(*), 1) as acima,
+       round(100.0 * count(*) filter (where situacao = 'Evadido') / count(*), 1) as evadido
+from situacao
+group by coorte
+order by coorte;
+
+-- E8 Em que semestre do curso os alunos evadem  [barras]
+-- "Período letivo da evasão" (Tabela 6 da proposta), por tipo de saída.
+-- Só coortes acompanhadas desde o ingresso (2023.1 em diante): as anteriores não têm os primeiros semestres nos dados.
+select (a.anoevasao - ta.anoingresso) * 2 + (a.semestreevasao - ta.semestreingresso) + 1 as semestre_do_curso,
+       a.tipoevasao as tipo,
+       count(*) as evadidos
+from aluno a
+    join curso c on c.id_curso = a.id_curso
+    join (select distinct id_aluno, id_turmaaluno from fatorendimentoaluno) fa on fa.id_aluno = a.id_aluno
+    join turmaaluno ta on ta.id_turmaaluno = fa.id_turmaaluno
+where a.tipoevasao is not null
+  and ta.anoingresso >= 2023
+group by 1, 2
+order by 1, 2;
+
+-- E9 Evasão conforme a taxa de reprovação do aluno (%)  [barras]
+-- Rendimento como sinal de alerta: quanto mais reprovações, maior a evasão? (reprovações desde 2023.1)
+-- Taxa de reprovação do aluno (reprovações ÷ disciplinas cursadas, sem trancados): usar a contagem bruta
+-- favoreceria quem evadiu cedo, que cursou menos disciplinas e teve menos chance de reprovar.
+with por_aluno as (
+    select a.id_aluno, a.tipoevasao is not null as evadiu,
+           100.0 * count(*) filter (where f.statusaluno like 'Reprovado%') / count(*) as pct_rep
+    from fatorendimentoaluno f
+    join aluno a on a.id_aluno = f.id_aluno
+    join curso c on c.id_curso = f.id_curso
+    join data dt on dt.id_data = f.id_data
+    join disciplina d on d.id_disciplina = f.id_disciplina
+    join turmaaluno ta on ta.id_turmaaluno = f.id_turmaaluno
+    where not f.periodotrancado
+    group by 1, 2
+),
+faixas as (
+    select evadiu, pct_rep,
+           case when pct_rep = 0 then 'Nenhuma' when pct_rep <= 20 then 'Até 20%'
+                when pct_rep <= 40 then '20% a 40%' else 'Acima de 40%' end as faixa
+    from por_aluno
+)
+select faixa || ' (n=' || count(*) || ')' as reprovacoes,
+       round(100.0 * count(*) filter (where evadiu) / count(*), 1) as pct_evasao
+from faixas
+group by faixa
+order by min(pct_rep);
+
+-- E10 Evasão por naturalidade (%)  [barras horizontais]
+-- A proposta usa a naturalidade no lugar do endereço atual (que muda e pode ser uma república).
+-- "TAXA GERAL" é a referência.
+with base as (
+    select a.naturalidade, a.tipoevasao is not null as evadiu
+    from aluno a
+    join curso c on c.id_curso = a.id_curso
+    where true
+)
+select nome || ' (n=' || n || ')' as grupo, pct_evasao from (
+    select 0 as ordem, 'TAXA GERAL' as nome, count(*) as n,
+           round(100.0 * count(*) filter (where evadiu) / count(*), 1) as pct_evasao
+    from base
+    union all
+    select 1, naturalidade, count(*), round(100.0 * count(*) filter (where evadiu) / count(*), 1)
+    from base group by naturalidade
+) t
+order by ordem, pct_evasao desc;
+
+-- E11 Alunos ativos com sinais de risco de evasão  [tabela]
+-- Lista para a coordenação agir: alunos ativos que trancaram o último semestre, tiveram nota média
+-- abaixo de 5 ou mais de 25% de faltas nele, ou acumulam 4 ou mais reprovações. Os 300 mais críticos.
+with ref as (select id_data from data order by ano desc, semestre desc limit 1),
+ult as (
+    select f.id_aluno, avg(f.medianota) as nota, avg(100.0 * f.qtdfaltas / d.cargahoraria) as faltas
+    from fatorendimentoaluno f
+    join disciplina d on d.id_disciplina = f.id_disciplina
+    join ref on ref.id_data = f.id_data
+    where not f.periodotrancado
+    group by 1
+),
+rep as (
+    select id_aluno, count(*) filter (where statusaluno like 'Reprovado%') as reprovacoes
+    from fatorendimentoaluno group by 1
+)
+select a.nome as "Aluno", a.numeromatricula as "Matrícula", c.departamento as "Curso",
+       ta.anosemestreingresso as "Coorte",
+       round(100.0 * a.cargahorariaintegralizadaatual / c.cargahorariatotal) as "% integralizado",
+       round(u.nota, 1) as "Nota média no último semestre",
+       round(u.faltas, 1) as "% de faltas no último semestre",
+       coalesce(rep.reprovacoes, 0) as "Reprovações",
+       concat_ws(', ', case when u.id_aluno is null then 'trancou o último semestre' end,
+                       case when u.nota < 5 then 'nota baixa' end,
+                       case when u.faltas > 25 then 'muitas faltas' end,
+                       case when coalesce(rep.reprovacoes, 0) >= 4 then 'muitas reprovações' end) as "Sinais"
+from aluno a
+    join curso c on c.id_curso = a.id_curso
+    join (select distinct id_aluno, id_turmaaluno from fatorendimentoaluno) fa on fa.id_aluno = a.id_aluno
+    join turmaaluno ta on ta.id_turmaaluno = fa.id_turmaaluno
+left join ult u on u.id_aluno = a.id_aluno
+left join rep on rep.id_aluno = a.id_aluno
+where a.tipoevasao is null
+  and (u.id_aluno is null or u.nota < 5 or u.faltas > 25 or coalesce(rep.reprovacoes, 0) >= 4)
+order by u.nota nulls first, rep.reprovacoes desc
+limit 300;
+
 -- 1.1 Evasão por forma de ingresso e cota (%)  [barras horizontais]
 -- Só grupos com 10 alunos ou mais: grupos menores dão 0% ou valores extremos por acaso.
 select a.formaingresso || ' / ' || a.tipocota || ' (n=' || count(*) || ')' as grupo,
@@ -121,7 +389,8 @@ order by count(*) filter (where f.statusaluno like 'Reprovado%') * 1.0 / count(*
 -- Retido = Atrasado + Em risco + Acima do tempo máximo; cursos ordenados pelo total retido.
 with ref as (select ano, semestre from data order by ano desc, semestre desc limit 1),
 alunos as (
-    select c.departamento as curso, a.cargahorariaintegralizadaatual as ch, c.cargahorariatotal as total,
+    select c.departamento as curso, ta.anosemestreingresso as coorte, a.tipoevasao is not null as evadiu,
+           a.cargahorariaintegralizadaatual as ch, c.cargahorariatotal as total,
            c.tempominimoconcluir as tmin, c.tempomaximoconcluir as tmax,
            (r.ano - ta.anoingresso) * 2 + (r.semestre - ta.semestreingresso) + 1 as n
     from aluno a
@@ -129,10 +398,11 @@ alunos as (
     join (select distinct id_aluno, id_turmaaluno from fatorendimentoaluno) fa on fa.id_aluno = a.id_aluno
     join turmaaluno ta on ta.id_turmaaluno = fa.id_turmaaluno
     cross join ref r
-    where a.tipoevasao is null and c.cargahorariatotal is not null
+    where c.cargahorariatotal is not null
 ),
 situacao as (
-    select curso, case
+    select curso, coorte, case
+        when evadiu then 'Evadido'
         when n > tmax then 'Acima do tempo máximo'
         when (total - ch) / (total * 1.0 / tmin) > tmax - n then 'Em risco de ultrapassar o tempo máximo'
         when ch < total * least(n, tmin) * 1.0 / tmin then 'Atrasado'
@@ -144,12 +414,13 @@ select curso || ' (n=' || count(*) || ')' as curso,
        round(100.0 * count(*) filter (where situacao = 'Em risco de ultrapassar o tempo máximo') / count(*), 1) as em_risco,
        round(100.0 * count(*) filter (where situacao = 'Acima do tempo máximo') / count(*), 1) as acima
 from situacao
+where situacao <> 'Evadido'
 group by curso
 order by count(*) filter (where situacao <> 'Dentro do fluxo') * 1.0 / count(*) desc;
 
--- 1.6 Evasão por faixa econômica, raça/etnia e deficiência (%)  [barras horizontais]
+-- 1.6a Evasão por faixa econômica, raça/etnia e deficiência (%)  [barras horizontais]
 -- Cada característica analisada separadamente; "TAXA GERAL" é a referência.
--- Evadidos e não evadidos têm faltas e notas quase iguais nestes dados, por isso barras em vez de Sankey.
+-- Barras em vez de Sankey: comparar a taxa de cada grupo com a geral fica mais direto. Notas e faltas: gráfico 1.6b.
 with base as (
     select a.tipoevasao is not null as evadiu, a.faixaeconomica, a.raca_etnia, a.deficiencia
     from aluno a
@@ -174,13 +445,31 @@ select nome || ' (n=' || n || ')' as grupo, round(100.0 * ev / n, 1) as pct_evas
 from grupos
 order by ordem, sub, 100.0 * ev / n desc;
 
+-- 1.6b Nota e faltas até o semestre anterior à evasão: evadidos × demais  [barras + linha]
+-- Segunda parte da consulta 1.6: a fato não tem o semestre da saída, então o histórico do evadido vai até
+-- o semestre anterior à evasão. Recorte por faixa econômica, raça/etnia ou deficiência nos filtros.
+select case when a.tipoevasao is null then 'Não evadidos' else 'Evadidos' end
+         || ' (n=' || count(distinct a.id_aluno) || ')' as grupo,
+       round(avg(f.medianota), 2) as media_nota,
+       round(avg(100.0 * f.qtdfaltas / d.cargahoraria), 1) as pct_faltas
+from fatorendimentoaluno f
+    join aluno a on a.id_aluno = f.id_aluno
+    join curso c on c.id_curso = f.id_curso
+    join data dt on dt.id_data = f.id_data
+    join disciplina d on d.id_disciplina = f.id_disciplina
+    join turmaaluno ta on ta.id_turmaaluno = f.id_turmaaluno
+where not f.periodotrancado
+group by a.tipoevasao is null
+order by a.tipoevasao is null;
+
 -- 1.7 Situação de integralização dos alunos ativos por curso (%)  [barras horizontais]
 -- Alunos ativos no último semestre. Acima do tempo máximo: semestres decorridos > tempoMaximoConcluir.
 -- Em risco: no ritmo regular (cargaHorariaTotal ÷ tempoMinimoConcluir por semestre), o que falta não cabe até o tempo máximo.
 -- Atrasado: carga integralizada abaixo da esperada para os semestres decorridos. Dentro do fluxo: os demais.
 with ref as (select ano, semestre from data order by ano desc, semestre desc limit 1),
 alunos as (
-    select c.departamento as curso, a.cargahorariaintegralizadaatual as ch, c.cargahorariatotal as total,
+    select c.departamento as curso, ta.anosemestreingresso as coorte, a.tipoevasao is not null as evadiu,
+           a.cargahorariaintegralizadaatual as ch, c.cargahorariatotal as total,
            c.tempominimoconcluir as tmin, c.tempomaximoconcluir as tmax,
            (r.ano - ta.anoingresso) * 2 + (r.semestre - ta.semestreingresso) + 1 as n
     from aluno a
@@ -188,10 +477,11 @@ alunos as (
     join (select distinct id_aluno, id_turmaaluno from fatorendimentoaluno) fa on fa.id_aluno = a.id_aluno
     join turmaaluno ta on ta.id_turmaaluno = fa.id_turmaaluno
     cross join ref r
-    where a.tipoevasao is null and c.cargahorariatotal is not null
+    where c.cargahorariatotal is not null
 ),
 situacao as (
-    select curso, case
+    select curso, coorte, case
+        when evadiu then 'Evadido'
         when n > tmax then 'Acima do tempo máximo'
         when (total - ch) / (total * 1.0 / tmin) > tmax - n then 'Em risco de ultrapassar o tempo máximo'
         when ch < total * least(n, tmin) * 1.0 / tmin then 'Atrasado'
@@ -204,6 +494,7 @@ select curso || ' (n=' || count(*) || ')' as curso,
        round(100.0 * count(*) filter (where situacao = 'Em risco de ultrapassar o tempo máximo') / count(*), 1) as em_risco,
        round(100.0 * count(*) filter (where situacao = 'Acima do tempo máximo') / count(*), 1) as acima
 from situacao
+where situacao <> 'Evadido'
 group by curso
 order by curso;
 
