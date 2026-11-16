@@ -9,7 +9,7 @@ services:
       POSTGRES_PASSWORD: idw_local
       POSTGRES_DB: idw
     ports:
-      - "5433:5432"
+      - "5434:5432"
     volumes:
       - ./db:/docker-entrypoint-initdb.d:ro
       - idw_pgdata:/var/lib/postgresql/data
@@ -26,6 +26,18 @@ services:
       MB_DB_FILE: /metabase-data/metabase.db
     volumes:
       - idw_metabase:/metabase-data
+
+  # Roda uma vez: cria o admin de demonstração, conecta o banco e importa as perguntas e o dashboard
+  metabase-setup:
+    image: python:3.12-alpine
+    container_name: idw-metabase-setup
+    depends_on:
+      - metabase
+      - postgres
+    volumes:
+      - ./metabase:/app:ro
+    command: ["python", "/app/configurar.py"]
+    restart: "no"
 
 volumes:
   idw_pgdata:

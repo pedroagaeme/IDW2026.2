@@ -4,6 +4,8 @@
 -- Alvo: PostgreSQL 16
 -- Ajuste em relação ao PDF: as colunas qtdNotas0_2,9 etc. não são
 -- identificadores válidos; a vírgula virou "_" (qtdNotas0_2_9, ...).
+-- Curso.cargaHorariaTotal não está no diagrama: vem do SQL do documento de consultas
+-- ("ajustes para avaliar retenção de alunos") e é usada nas consultas 1.5.2 e 1.7.
 -- ========================================================
 
 -- 1. DIMENSÕES COMPARTILHADAS
@@ -18,6 +20,7 @@ CREATE TABLE Curso (
     id_curso            INT PRIMARY KEY,
     nivelEnsino         VARCHAR(50),
     duracao             INT,
+    cargaHorariaTotal   INT,  -- ajuste do documento de consultas, para avaliar retenção (1.5.2 e 1.7)
     turno               VARCHAR(20),
     departamento        VARCHAR(100),
     centro              VARCHAR(100),
@@ -49,12 +52,14 @@ CREATE TABLE Disciplina (
 
 CREATE TABLE TurmaDisciplina (
     id_turmaDisciplina INT PRIMARY KEY,
-    id_disciplina      INT,
     id_professor1      INT,
+    id_professor2      INT,
+    id_professor3      INT,
     periodo            VARCHAR(20),
     horario            VARCHAR(50),
-    FOREIGN KEY (id_disciplina)  REFERENCES Disciplina(id_disciplina),
-    FOREIGN KEY (id_professor1)  REFERENCES Professor(id_professor)
+    FOREIGN KEY (id_professor1)  REFERENCES Professor(id_professor),
+    FOREIGN KEY (id_professor2)  REFERENCES Professor(id_professor),
+    FOREIGN KEY (id_professor3)  REFERENCES Professor(id_professor)
 );
 
 CREATE TABLE TurmaAluno (
@@ -62,8 +67,8 @@ CREATE TABLE TurmaAluno (
     anoIngresso             INT,
     semestreIngresso        INT,
     anoSemestreIngresso     VARCHAR(10),
-    semestreMinimoConclusao INT,
-    semestreMaximoConclusao INT
+    semestreMinimoConclusao VARCHAR(10),
+    semestreMaximoConclusao VARCHAR(10)
 );
 
 CREATE TABLE Aluno (

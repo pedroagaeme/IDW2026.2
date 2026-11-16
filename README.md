@@ -10,40 +10,71 @@ Tudo roda no seu computador com Docker.
 docker compose up -d
 ```
 
-- PostgreSQL: `localhost:5433` (banco `idw`, usuário `idw`, senha `idw_local`)
-- Metabase: http://localhost:3000 (a primeira inicialização leva alguns minutos)
+- PostgreSQL: `localhost:5434` (banco `idw`, usuário `idw`, senha `idw_local`)
+- Metabase: http://localhost:3000
 
-Para recriar o banco do zero (os scripts só rodam com o volume vazio):
+A primeira inicialização leva alguns minutos. O serviço `metabase-setup` espera o Metabase subir e configura tudo
+sozinho: cria o admin de demonstração, conecta o banco `idw` e importa as 30 perguntas do documento
+"Consultas em Linguagem Natural" e o dashboard, em três abas:
+
+- **Visão estratégica:** KPIs (alunos ativos, taxa de evasão e aprovação do último semestre com tendência, % retidos),
+  série histórica da taxa de evasão no período (TEA, método da proposta de DW em `docs/proposta`), mapa de calor da
+  evasão por curso e semestre, situação de cada coorte, momento da evasão, evasão × reprovação, evasão por
+  naturalidade e a lista de alunos ativos com sinais de risco.
+- **Esquema 1 – Rendimento do aluno** e **Esquema 2 – Rendimento da disciplina:** as consultas 1.x e 2.x do documento.
+
+**Filtros do dashboard** (vários valores por filtro; as opções vêm do próprio banco; cada aba mostra só os que
+valem para os seus gráficos):
+
+- Recorte institucional: semestre, centro, campus, curso/departamento (opções limitadas pelo centro e campus
+  escolhidos), turno do curso, modalidade de ensino e grau.
+- Disciplina: tipo (obrigatória/optativa/eletiva) e códigos das disciplinas.
+- Perfil do aluno: coorte de ingresso, forma de ingresso, tipo de cota, faixa econômica, escola do ensino médio,
+  gênero, raça/etnia, faixa etária, deficiência, naturalidade e estado civil.
+- Específicos: "Disciplina em foco" (dispersão nota × frequência e comparação de professores) e
+  "Separar evolução por" (turno ou modalidade nas séries temporais).
+Acompanhe com `docker compose logs -f metabase-setup`; ao final ele mostra o link do dashboard.
+
+**Login do Metabase (somente demonstração, dados fictícios):**
+
+| Campo | Valor |
+|---|---|
+| E-mail | `admin@example.com` |
+| Senha | `Idw@Demo2026` |
+
+Depois de entrar, abra **Our analytics → IDW – Rendimento Acadêmico**. Para trocar o login de demonstração,
+altere `MB_ADMIN_EMAIL` e `MB_ADMIN_SENHA` no serviço `metabase-setup` antes da primeira subida.
+
+Para recriar tudo do zero (os scripts só rodam com os volumes vazios):
 
 ```bash
 docker compose down -v
 docker compose up -d
 ```
 
-## Conectar o banco no Metabase
+Se a porta 3000 ou 5434 já estiver em uso, pare o outro serviço ou altere as portas no `docker-compose.yml`.
 
-Na configuração inicial, ou em *Admin → Databases → Add database*, escolha **PostgreSQL**:
+## Salvar os gráficos para enviar
 
-| Campo | Valor |
-|---|---|
-| Host | `idw-postgres` |
-| Porta | `5432` |
-| Banco | `idw` |
-| Usuário | `idw` |
-| Senha | `idw_local` |
+- **Um gráfico:** abra a pergunta e use o ícone de download (canto inferior direito) para salvar em PNG.
+- **Dashboard inteiro:** no menu **⋯** do dashboard, exporte em PDF.
 
 ## Conteúdo
 
 - `db/01_schema.sql`: criação das tabelas (dimensões e fatos).
 - `db/02_seed_pdf.sql`: registros de exemplo do PDF.
-- `db/03_seed_extra_pt.sql`: povoamento adicional, determinístico e em português (7 cursos, 11 professores,
-  8 disciplinas, 6 semestres, 201 alunos, ~2.900 registros de rendimento).
-- `consultas/consultas.sql`: consultas do PDF, prontas para colar como perguntas SQL no Metabase.
+- `db/03_seed_extra_pt.sql`: povoamento adicional, determinístico e em português (7 cursos, 31 professores,
+  21 disciplinas, 6 semestres, 5.001 alunos de 12 coortes (2019.1 a 2024.2), ~110 mil registros de rendimento).
+- `metabase/configurar.py`: configuração automática do Metabase (admin, banco, perguntas e dashboard).
+- `consultas/consultas.sql`: as mesmas consultas em SQL puro, para usar fora do Metabase (gerado com `python metabase/configurar.py --sql > consultas/consultas.sql`; não edite à mão).
 
 ## Observações sobre o esquema
 
 - `qtdNotas0_2,9` (e as demais faixas) viraram `qtdNotas0_2_9`, porque a vírgula não é válida em identificador.
 - O curso 1 do PDF foi ajustado para `modalidadeEnsino = 'Presencial'` (necessário para as consultas presencial × EAD).
-- `Disciplina` não tem nome, e `TurmaDisciplina` só tem `id_professor1`; por isso a consulta de co-docência
-  (2.5 do PDF) não é respondível com este esquema.
+- `Disciplina` não tem nome; nos gráficos as disciplinas aparecem como "Disc. 102" etc.
+- `TurmaDisciplina` não tem `id_disciplina` (a disciplina da turma está nas tabelas fato) e tem `id_professor2` e
+  `id_professor3` para co-docência: ~20% das turmas têm 2 professores e ~10% têm 3 (consulta 2.5).
+- `Curso.cargaHorariaTotal` não está no diagrama do PDF: vem do SQL do documento de consultas ("ajustes para
+  avaliar retenção de alunos") e é usada nas consultas 1.5.2 (retidos) e 1.7 (integralização).
 - Todos os dados, inclusive CPFs, são fictícios.

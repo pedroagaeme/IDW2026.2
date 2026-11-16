@@ -1,13 +1,13 @@
 -- Povoamento básico, exatamente como no PDF (um registro por tabela).
 INSERT INTO Data VALUES (1, 2023, 1, '2023.1'), (2, 2023, 2, '2023.2');
 
-INSERT INTO Curso VALUES (1, 'Graduação', 8, 'Integral', 'Computação', 'CIn', 'Campus Recife', 'Presencial', 'Regular', 8, 14, '2020.1');
+INSERT INTO Curso VALUES (1, 'Graduação', 8, 3200, 'Integral', 'Computação', 'CIn', 'Campus Recife', 'Presencial', 'Regular', 8, 14, '2020.1');
 
 INSERT INTO Professor VALUES (1, 'Carlos Silva', '1980-05-12', 'Masculino', 'Boa Viagem', '111.222.333-44', 'Brasileira', 'Recife');
 
 INSERT INTO Disciplina VALUES (101, 60, 4, 'Obrigatória');
 
-INSERT INTO TurmaDisciplina VALUES (501, 101, 1, '2023.1', '24M12');
+INSERT INTO TurmaDisciplina (id_turmaDisciplina, id_professor1, periodo, horario) VALUES (501, 1, '2023.1', '24M12');
 
 INSERT INTO TurmaAluno VALUES (20231, 2023, 1, '2023.1', 8, 14);
 

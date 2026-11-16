@@ -3,8 +3,9 @@
 -- Complementa o registro de exemplo do PDF (02_seed_pdf.sql).
 -- Todos os dados são fictícios e determinísticos (sem random()),
 -- então rodar o script sempre gera o mesmo resultado.
--- Volume: 7 cursos, 11 professores, 9 disciplinas, 6 semestres,
--- 201 alunos e ~2.400 registros de rendimento.
+-- Volume: 7 cursos, 31 professores, 21 disciplinas, 6 semestres,
+-- 5.001 alunos e ~110 mil registros de rendimento (alunos e disciplinas).
+-- Para mudar o volume, ajuste N_ALUNOS (generate_series da dimensão Aluno).
 -- ========================================================
 
 -- Função auxiliar: número pseudoaleatório determinístico em [0, modulo)
@@ -29,12 +30,12 @@ INSERT INTO Data VALUES
 -- Dimensão Curso
 -- --------------------------------------------------------
 INSERT INTO Curso VALUES
-    (2, 'Graduação', 8,  'Noturno',    'Sistemas de Informação',  'CIn',  'Campus Recife',   'Bacharelado',  'Presencial', 8,  14, '2019.1'),
-    (3, 'Graduação', 10, 'Integral',   'Engenharia Civil',        'CTG',  'Campus Recife',   'Bacharelado',  'Presencial', 10, 15, '2018.2'),
-    (4, 'Graduação', 12, 'Integral',   'Medicina',                'CCM',  'Campus Recife',   'Bacharelado',  'Presencial', 12, 18, '2017.1'),
-    (5, 'Graduação', 8,  'Noturno',    'Administração',           'CCSA', 'Ensino a Distância', 'Bacharelado', 'EAD',        8,  12, '2021.1'),
-    (6, 'Graduação', 8,  'Matutino',   'Letras',                  'CAC',  'Campus Recife',   'Licenciatura', 'Presencial', 8,  12, '2019.2'),
-    (7, 'Graduação', 8,  'Vespertino', 'Física',                  'CCEN', 'Campus Caruaru',  'Licenciatura', 'Presencial', 8,  14, '2020.2');
+    (2, 'Graduação', 8, 3000,  'Noturno',    'Sistemas de Informação',  'CIn',  'Campus Recife',   'Bacharelado',  'Presencial', 8,  14, '2019.1'),
+    (3, 'Graduação', 10, 3600, 'Integral',   'Engenharia Civil',        'CTG',  'Campus Recife',   'Bacharelado',  'Presencial', 10, 15, '2018.2'),
+    (4, 'Graduação', 12, 7200, 'Integral',   'Medicina',                'CCM',  'Campus Recife',   'Bacharelado',  'Presencial', 12, 18, '2017.1'),
+    (5, 'Graduação', 8, 3000,  'Noturno',    'Administração',           'CCSA', 'Ensino a Distância', 'Bacharelado', 'EAD',        8,  12, '2021.1'),
+    (6, 'Graduação', 8, 2800,  'Matutino',   'Letras',                  'CAC',  'Campus Recife',   'Licenciatura', 'Presencial', 8,  12, '2019.2'),
+    (7, 'Graduação', 8, 2800,  'Vespertino', 'Física',                  'CCEN', 'Campus Caruaru',  'Licenciatura', 'Presencial', 8,  14, '2020.2');
 
 -- --------------------------------------------------------
 -- Dimensão Professor (CPFs fictícios)
@@ -51,6 +52,20 @@ INSERT INTO Professor VALUES
     (10, 'Camila Souza Vasconcelos',   '1988-07-07', 'Feminino',  'Imbiribeira',  '000.000.010-00', 'Brasileira', 'Paulista'),
     (11, 'Henrique Lacerda Pinto',     '1981-03-16', 'Masculino', 'Boa Vista',    '000.000.011-00', 'Brasileira', 'Recife');
 
+INSERT INTO Professor
+SELECT i,
+       CASE WHEN i % 2 = 0
+            THEN (ARRAY['Adriana','Bianca','Cláudia','Denise','Elaine','Flávia','Glória','Ingrid','Joana','Kátia'])[1 + i % 10]
+            ELSE (ARRAY['André','Bernardo','César','Daniel','Emanuel','Fernando','Geraldo','Hugo','Ivan','Jorge'])[1 + i % 10] END
+         || ' ' || (ARRAY['Arruda','Brandão','Correia','Dantas','Esteves','Freitas','Guedes','Holanda','Leite','Monteiro'])[1 + (i * 7) % 10],
+       make_date(1960 + i % 30, 1 + i % 12, 1 + i % 28),
+       CASE WHEN i % 2 = 0 THEN 'Feminino' ELSE 'Masculino' END,
+       (ARRAY['Boa Viagem','Graças','Casa Forte','Torre','Madalena','Espinheiro','Aflitos','Parnamirim'])[1 + i % 8],
+       '000.000.' || lpad(i::text, 3, '0') || '-00',
+       'Brasileira',
+       (ARRAY['Recife','Olinda','Caruaru','Petrolina','João Pessoa','Natal','Maceió'])[1 + i % 7]
+FROM generate_series(12, 31) AS i;
+
 -- --------------------------------------------------------
 -- Dimensão Disciplina
 -- --------------------------------------------------------
@@ -64,37 +79,55 @@ INSERT INTO Disciplina VALUES
     (108, 60, 4, 'Obrigatória'),
     (109, 75, 5, 'Optativa');
 
+INSERT INTO Disciplina
+SELECT d,
+       (ARRAY[30, 45, 60, 60, 75, 90])[1 + d % 6],
+       (ARRAY[2, 3, 4, 4, 5, 6])[1 + d % 6],
+       (ARRAY['Obrigatória','Obrigatória','Obrigatória','Optativa','Eletiva'])[1 + d % 5]
+FROM generate_series(110, 121) AS d;
+
 -- --------------------------------------------------------
 -- Dimensão TurmaDisciplina: 2 turmas (manhã e noite) por disciplina e semestre
 -- id = 10000 + (disciplina - 100) * 100 + semestre * 10 + turma
+-- A disciplina da turma fica nas tabelas fato (TurmaDisciplina não tem id_disciplina).
+-- Co-docência (regra repetida na Fato 1, que dá um pequeno bônus de nota a essas turmas):
+--   pseudo('cd' || id, 10) = 0      -> 3 professores (~10% das turmas)
+--   pseudo('cd' || id, 10) in (1,2) -> 2 professores (~20%)
 -- --------------------------------------------------------
-INSERT INTO TurmaDisciplina
-SELECT 10000 + (d - 100) * 100 + p * 10 + t,
-       d,
-       2 + ((d + p + t) % 10),
-       dt.anoSemestre,
-       CASE t WHEN 1 THEN '24M12' ELSE '35N12' END
-FROM generate_series(102, 109) AS d
-CROSS JOIN generate_series(1, 6) AS p
-CROSS JOIN generate_series(1, 2) AS t
-JOIN Data dt ON dt.id_data = p;
+INSERT INTO TurmaDisciplina (id_turmaDisciplina, id_professor1, id_professor2, id_professor3, periodo, horario)
+SELECT id,
+       2 + (x % 30),
+       CASE WHEN pseudo('cd' || id, 10) <= 2 THEN 2 + ((x + 7) % 30) END,
+       CASE WHEN pseudo('cd' || id, 10) = 0  THEN 2 + ((x + 15) % 30) END,
+       anoSemestre,
+       horario
+FROM (
+    SELECT 10000 + (d - 100) * 100 + p * 10 + t AS id,
+           d * 3 + p + t AS x,
+           dt.anoSemestre,
+           CASE t WHEN 1 THEN '24M12' ELSE '35N12' END AS horario
+    FROM generate_series(102, 121) AS d
+    CROSS JOIN generate_series(1, 6) AS p
+    CROSS JOIN generate_series(1, 2) AS t
+    JOIN Data dt ON dt.id_data = p
+) turmas;
 
 -- --------------------------------------------------------
--- Dimensão TurmaAluno: coortes de 2021.1 a 2024.2 (20231 já existe no PDF)
+-- Dimensão TurmaAluno: coortes de 2019.1 a 2024.2 (20231 já existe no PDF)
 -- --------------------------------------------------------
 INSERT INTO TurmaAluno
-SELECT (2021 + c / 2) * 10 + 1 + c % 2,
-       2021 + c / 2,
+SELECT (2019 + c / 2) * 10 + 1 + c % 2,
+       2019 + c / 2,
        1 + c % 2,
-       (2021 + c / 2)::text || '.' || (1 + c % 2)::text,
+       (2019 + c / 2)::text || '.' || (1 + c % 2)::text,
        8,
        14
-FROM generate_series(0, 7) AS c
+FROM generate_series(0, 11) AS c
 ON CONFLICT (id_turmaAluno) DO NOTHING;
 
 -- --------------------------------------------------------
--- Dimensão Aluno: 200 alunos (ids 1002 a 1201)
--- A coorte do aluno é (i % 8): 0 = 2021.1, 1 = 2021.2, ..., 7 = 2024.2
+-- Dimensão Aluno: 5.000 alunos (ids 1002 a 6001)
+-- A coorte do aluno é (i % 12): 0 = 2019.1, 1 = 2019.2, ..., 11 = 2024.2
 -- Alunos evadidos têm ano/semestre de evasão entre 2023.2 e 2025.2
 -- --------------------------------------------------------
 INSERT INTO Aluno
@@ -114,19 +147,20 @@ WITH nomes AS (
 ),
 base AS (
     SELECT i,
-           i % 8                                    AS c,
-           2021 + (i % 8) / 2                       AS ano_ing,
-           1 + (i % 8) % 2                          AS sem_ing,
+           i % 12                                   AS c,
+           2019 + (i % 12) / 2                      AS ano_ing,
+           1 + (i % 12) % 2                         AS sem_ing,
            CASE WHEN i % 2 = 0 THEN 'Feminino' ELSE 'Masculino' END AS genero,
            CASE WHEN pseudo('fe' || i, 10) < 4 THEN 'Baixa'
                 WHEN pseudo('fe' || i, 10) < 8 THEN 'Média'
                 ELSE 'Alta' END                     AS faixa
-    FROM generate_series(1, 200) AS i
+    FROM generate_series(1, 5000) AS i  -- N_ALUNOS
 ),
 ev AS (
     SELECT b.*,
            GREATEST(1, (b.ano_ing - 2023) * 2 + b.sem_ing) AS inicio,   -- 1 = 2023.1
-           (b.i % 9 = 0 OR (b.faixa = 'Baixa' AND b.i % 11 = 0)) AS evadiu
+           -- sorteio (e não i % 9): com a coorte em i % 12, o múltiplo comum concentraria a evasão em 1 de cada 3 coortes
+           (pseudo('ev' || b.i, 9) = 0 OR (b.faixa = 'Baixa' AND pseudo('eb' || b.i, 11) = 0)) AS evadiu
     FROM base b
 ),
 ev2 AS (
@@ -152,9 +186,15 @@ SELECT 1001 + e.i,
        CASE WHEN e.evadiu THEN 1 + (e.idx_evasao - 1) % 2 END,
        CASE WHEN e.evadiu THEN (ARRAY['Abandono','Abandono','Cancelamento','Transferência'])[1 + pseudo('te' || e.i, 4)] END,
        (e.faixa = 'Baixa' AND pseudo('as' || e.i, 10) < 6),
-       -- carga horária: semestres cursados até o último período ativo
-       LEAST(3200, ((CASE WHEN e.evadiu THEN e.idx_evasao - 1 ELSE 6 END) - ((e.ano_ing - 2023) * 2 + e.sem_ing) + 1)
-                    * (260 + pseudo('ch' || e.i, 100))),
+       -- carga horária: semestres cursados até o último período ativo × ritmo regular do curso
+       -- (cargaHorariaTotal ÷ duração) × ritmo do aluno: ~20% lentos (40% a 75% do regular; ~40% entre os de
+       -- baixa renda sem assistência) e os demais de 95% a 130%
+       LEAST(cu.cargaHorariaTotal,
+             ROUND(((CASE WHEN e.evadiu THEN e.idx_evasao - 1 ELSE 6 END) - ((e.ano_ing - 2023) * 2 + e.sem_ing) + 1)
+                   * cu.cargaHorariaTotal::numeric / cu.duracao
+                   * (CASE WHEN pseudo('rt' || e.i, 10) < CASE WHEN e.faixa = 'Baixa' AND pseudo('as' || e.i, 10) >= 6
+                                                               THEN 4 ELSE 2 END
+                           THEN 0.40 ELSE 0.95 END + pseudo('ch' || e.i, 100) * 0.0035))),
        -- nome: primeiro nome + sobrenome da mãe + sobrenome do pai
        CASE WHEN e.genero = 'Feminino' THEN n.fem[1 + pseudo('pn' || e.i, 20)] ELSE n.masc[1 + pseudo('pn' || e.i, 20)] END
            || ' ' || n.sob[1 + pseudo('sm' || e.i, 30)] || ' ' || n.sob[1 + pseudo('sp' || e.i, 30)],
@@ -164,7 +204,7 @@ SELECT 1001 + e.i,
        e.genero,
        (ARRAY['Parda','Parda','Parda','Parda','Branca','Branca','Branca','Preta','Preta','Amarela'])[1 + pseudo('ra' || e.i, 10)],
        n.bairros[1 + pseudo('ba' || e.i, 20)],
-       lpad((100 + e.i)::text, 3, '0') || '.000.' || lpad(e.i::text, 3, '0') || '-00',
+       regexp_replace(lpad(e.i::text, 9, '0'), '(\d{3})(\d{3})(\d{3})', '\1.\2.\3') || '-00',
        'Brasileira',
        n.cidades[1 + pseudo('na' || e.i, 10)],
        n.fem[1 + pseudo('mn' || e.i, 20)]  || ' ' || n.sob[1 + pseudo('sm' || e.i, 30)],
@@ -173,7 +213,8 @@ SELECT 1001 + e.i,
        CASE WHEN pseudo('de' || e.i, 20) < 17 THEN 'Nenhuma'
             ELSE (ARRAY['Visual','Auditiva','Física'])[1 + pseudo('dt' || e.i, 3)] END,
        e.ano_ing - 1
-FROM ev2 e CROSS JOIN nomes n;
+FROM ev2 e CROSS JOIN nomes n
+JOIN Curso cu ON cu.id_curso = 1 + (e.i % 7);
 
 -- Faixa etária calculada pela idade em 31/12/2025
 UPDATE Aluno
@@ -186,7 +227,7 @@ WHERE id_aluno > 1001;
 
 -- --------------------------------------------------------
 -- Fato 1: FatoRendimentoAluno
--- Cada aluno cursa 3 disciplinas por semestre, do início (ou 2023.1)
+-- Cada aluno cursa 5 disciplinas por semestre, do início (ou 2023.1)
 -- até o semestre anterior à evasão. Semestre trancado: nota NULL.
 -- --------------------------------------------------------
 INSERT INTO FatoRendimentoAluno
@@ -195,22 +236,26 @@ WITH matriculas AS (
            a.id_curso,
            a.faixaEconomica,
            a.assistenciaEstudantil,
+           -- quem vai evadir: 0 = não evade, 1 = semestres anteriores, 2 = último semestre antes da saída
+           CASE WHEN a.anoEvasao IS NULL THEN 0
+                WHEN p.p = (a.anoEvasao - 2023) * 2 + a.semestreEvasao - 1 THEN 2
+                ELSE 1 END                                       AS sinal_evasao,
            (a.id_aluno - 1001)                                   AS i,
            p.p                                                   AS periodo,
            k.k                                                   AS k,
-           ((a.id_aluno - 1001) % 8)                             AS c
+           ((a.id_aluno - 1001) % 12)                            AS c
     FROM Aluno a
     CROSS JOIN generate_series(1, 6) AS p(p)
-    CROSS JOIN generate_series(0, 2) AS k(k)
+    CROSS JOIN generate_series(0, 4) AS k(k)
     WHERE a.id_aluno > 1001
       -- semestre >= início (ingresso ou 2023.1) e anterior à evasão
-      AND p.p >= GREATEST(1, ((2021 + ((a.id_aluno - 1001) % 8) / 2) - 2023) * 2 + 1 + ((a.id_aluno - 1001) % 8) % 2)
+      AND p.p >= GREATEST(1, ((2019 + ((a.id_aluno - 1001) % 12) / 2) - 2023) * 2 + 1 + ((a.id_aluno - 1001) % 12) % 2)
       AND p.p <= CASE WHEN a.anoEvasao IS NULL THEN 6
                       ELSE (a.anoEvasao - 2023) * 2 + a.semestreEvasao - 1 END
 ),
 com_turma AS (
     SELECT m.*,
-           102 + (pseudo(m.i || '-' || m.periodo, 8) + m.k * 3) % 8 AS d,
+           102 + (pseudo(m.i || '-' || m.periodo, 20) + m.k * 4) % 20 AS d,
            1 + pseudo('t' || m.i || '-' || m.periodo || '-' || m.k, 2) AS t,
            -- trancamento vale para o semestre inteiro; mais frequente em baixa renda sem assistência
            (pseudo('tr' || m.i || '-' || m.periodo,
@@ -219,27 +264,38 @@ com_turma AS (
                 THEN pseudo('zn' || m.i || m.periodo || m.k, 30) / 10.0           -- notas muito baixas (0 a 2,9)
                 ELSE LEAST(10, 4.2 + pseudo('n' || m.i || '-' || m.periodo || '-' || m.k, 100) * 0.058
                                + CASE m.faixaEconomica WHEN 'Alta' THEN 0.4 WHEN 'Média' THEN 0.2 ELSE 0 END
-                               + CASE WHEN m.assistenciaEstudantil THEN 0.3 ELSE 0 END)
+                               + CASE WHEN m.assistenciaEstudantil THEN 0.3 ELSE 0 END
+                               - CASE m.sinal_evasao WHEN 1 THEN 0.8 WHEN 2 THEN 2.0 ELSE 0 END)
            END AS nota,
            pseudo('f' || m.i || '-' || m.periodo || '-' || m.k, 13)
-             + CASE WHEN pseudo('s' || m.i || '-' || m.periodo || '-' || m.k, 19) = 0 THEN 18 ELSE 0 END AS faltas
+             + CASE WHEN pseudo('s' || m.i || '-' || m.periodo || '-' || m.k, 19) = 0 THEN 18 ELSE 0 END
+             -- sinais de alerta antes da evasão: mais faltas, sobretudo no último semestre cursado
+             + CASE m.sinal_evasao WHEN 1 THEN 3 WHEN 2 THEN 8 ELSE 0 END AS faltas
     FROM matriculas m
+),
+com_codocencia AS (
+    -- turmas com 2 ou 3 professores (mesma regra da dimensão TurmaDisciplina) têm notas um pouco maiores
+    SELECT c.*,
+           10000 + (c.d - 100) * 100 + c.periodo * 10 + c.t AS id_td,
+           LEAST(10, c.nota + CASE pseudo('cd' || (10000 + (c.d - 100) * 100 + c.periodo * 10 + c.t), 10)
+                                  WHEN 0 THEN 0.6 WHEN 1 THEN 0.4 WHEN 2 THEN 0.4 ELSE 0 END) AS nota_final
+    FROM com_turma c
 )
 SELECT 1 + ROW_NUMBER() OVER (ORDER BY t.id_aluno, t.periodo, t.k),
        t.id_aluno,
-       (2021 + t.c / 2) * 10 + 1 + t.c % 2,
+       (2019 + t.c / 2) * 10 + 1 + t.c % 2,
        t.d,
-       10000 + (t.d - 100) * 100 + t.periodo * 10 + t.t,
+       t.id_td,
        t.id_curso,
        t.periodo,
        CASE WHEN t.trancado        THEN 'Trancado'
             WHEN t.faltas >= 18    THEN 'Reprovado por Falta'
-            WHEN t.nota < 5        THEN 'Reprovado por Nota'
+            WHEN t.nota_final < 5  THEN 'Reprovado por Nota'
             ELSE 'Aprovado' END,
        CASE WHEN t.trancado THEN 0 ELSE t.faltas END,
-       CASE WHEN t.trancado THEN NULL ELSE ROUND(t.nota::numeric, 2) END,
+       CASE WHEN t.trancado THEN NULL ELSE ROUND(t.nota_final::numeric, 2) END,
        t.trancado
-FROM com_turma t;
+FROM com_codocencia t;
 
 -- --------------------------------------------------------
 -- Fato 2: FatoRendimentoDisciplina
